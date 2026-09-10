@@ -484,7 +484,7 @@ const CFG = {
   shipR: 3.3,                    // hit radius
   grazeBand: 12.5,               // how close counts as a graze
   camDist: 62,
-  spawnAhead: 3000,              // world units of corridor kept populated
+  spawnAhead: 3600,              // world units of corridor kept populated
   baseSpeed: 5.0,                // units per 60hz frame at gear 0
   gearStep: 2.95,
   maxGear: 5,
@@ -837,7 +837,7 @@ function initThree(){
   renderer.setClearColor(0x000000, 1);
 
   scene = new THREE.Scene();
-  scene.fog = new THREE.Fog(0x02040a, 700, 3400);
+  scene.fog = new THREE.Fog(0x02040a, 700, 3900);
 
   camera = new THREE.PerspectiveCamera(72, innerWidth/innerHeight, 1, 90000);
   camera.position.set(0, 12, CFG.camDist);
@@ -1179,7 +1179,7 @@ function newMesh(type){
 
 function buildEntityPools(){
   for(let i=0;i<9;i++){ const g=makeRockGeo(); rockGeos.push(g); rockEdges.push(new THREE.EdgesGeometry(g)); }
-  const sizes={ast:118,mine:24,gate:14,wall:16,pickup:26,flare:4};
+  const sizes={ast:140,mine:24,gate:14,wall:16,pickup:26,flare:4};
   for(const t in sizes) for(let i=0;i<sizes[t];i++) pools[t].push(newMesh(t));
   buildBullets(); buildParticles(); buildPopups();
 }
@@ -1188,6 +1188,11 @@ function grab(type){
   const p=pools[type];
   for(let i=0;i<p.length;i++) if(!p[i].visible) return p[i];
   return null;
+}
+function freeCount(type){
+  const p=pools[type]; let n=0;
+  for(let i=0;i<p.length;i++) if(!p[i].visible) n++;
+  return n;
 }
 
 function spawn(type, x, y, z, opt={}){
@@ -1551,6 +1556,9 @@ let lastPattern='';
 function runSpawner(){
   const d=diffOf();
   while(State.dist + CFG.spawnAhead >= spawnCursor){
+    // never spawn a partial encounter: if the corridor is already packed,
+    // insert breathing room instead of a half-drawn pattern
+    if(freeCount('ast') < 46 || freeCount('pickup') < 8){ spawnCursor += 520; continue; }
     const z = -(spawnCursor - State.dist);
     let key;
     if(State.dist/State.target > 0.86){
@@ -1877,7 +1885,7 @@ function stepWorld(dt, ds){
     if(!b.active) continue;
     b.prevZ=b.z; b.z -= brel;
     b.mesh.position.set(b.x,b.y,b.z);
-    if(b.z < -3200){ b.active=false; b.mesh.visible=false; continue; }
+    if(b.z < -3800){ b.active=false; b.mesh.visible=false; continue; }
     for(let i=ents.length-1;i>=0;i--){
       const e=ents[i];
       if(e.dead || (e.type!=='ast' && e.type!=='mine')) continue;
