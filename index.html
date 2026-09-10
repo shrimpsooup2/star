@@ -96,6 +96,8 @@ canvas#gl{display:block;position:fixed;inset:0;width:100%;height:100%;}
 /* reticle + world overlays */
 #reticle{position:fixed;top:0;left:0;width:120px;height:120px;margin:-60px 0 0 -60px;opacity:.9;
   will-change:transform;transition:opacity .2s}
+#fpv-frame{position:fixed;inset:0;width:100%;height:100%;display:none;pointer-events:none}
+#fpv-frame.on{display:block}
 #popups{position:fixed;inset:0;overflow:hidden}
 .pop{position:absolute;font-size:15px;font-weight:900;letter-spacing:.05em;white-space:nowrap;
   transform:translate(-50%,-50%);text-shadow:0 2px 8px #000;will-change:transform,opacity}
@@ -346,6 +348,14 @@ button:active{transform:scale(.96)}
     <div id="combo-line"></div>
   </div>
 
+  <svg id="fpv-frame" viewBox="0 0 100 100" preserveAspectRatio="none">
+    <path d="M0 0 L26 0 L0 17 Z"      fill="rgba(10,26,30,.55)"/>
+    <path d="M100 0 L74 0 L100 17 Z"  fill="rgba(10,26,30,.55)"/>
+    <path d="M0 100 L22 100 L0 86 Z"  fill="rgba(10,26,30,.55)"/>
+    <path d="M100 100 L78 100 L100 86 Z" fill="rgba(10,26,30,.55)"/>
+    <path d="M0 17 L26 0 M100 17 L74 0 M0 86 L22 100 M100 86 L78 100"
+          stroke="rgba(34,255,221,.34)" stroke-width=".5" fill="none" vector-effect="non-scaling-stroke"/>
+  </svg>
   <div id="popups"></div>
   <div id="gear-flash"></div>
 </div>
@@ -381,6 +391,7 @@ button:active{transform:scale(.96)}
     <button class="btn-primary" id="btn-launch">LAUNCH</button>
     <div class="btn-row">
       <button class="btn-ghost" id="btn-mouse">MOUSE STEER: OFF</button>
+      <button class="btn-ghost" id="btn-fpv">VIEW: CHASE</button>
       <button class="btn-ghost" id="btn-audio">AUDIO: ON</button>
     </div>
   </div>
@@ -396,6 +407,7 @@ button:active{transform:scale(.96)}
     <div class="ctrl-row"><span><span class="keycap">CTRL</span>/<span class="keycap">Z</span></span><span class="d">Brake &mdash; downshift, sharper turning</span></div>
     <div class="ctrl-row"><span><span class="keycap">SPACE</span></span><span class="d">Pulse cannon &mdash; <b>hold to charge, release to fire</b></span></div>
     <div class="ctrl-row"><span><span class="keycap">X</span>/<span class="keycap">E</span></span><span class="d">BREAKER overdrive (when the ring is full)</span></div>
+    <div class="ctrl-row"><span><span class="keycap">V</span></span><span class="d">Toggle cockpit / chase view</span></div>
     <div class="ctrl-row"><span><span class="keycap">ESC</span>/<span class="keycap">P</span></span><span class="d">Pause</span></div>
 
     <h2 class="sec">THE ONLY RULE THAT MATTERS</h2>
@@ -447,6 +459,7 @@ button:active{transform:scale(.96)}
     <div class="row"><span class="k">BEST COMBO</span><span class="v" id="p-combo">0</span></div>
     <button class="btn-primary" id="btn-resume">RESUME</button>
     <div class="btn-row">
+      <button class="btn-ghost" id="btn-fpv2">VIEW: CHASE</button>
       <button class="btn-ghost" id="btn-audio2">AUDIO: ON</button>
       <button class="btn-ghost" id="btn-quit">ABANDON RUN</button>
     </div>
@@ -500,6 +513,7 @@ const CFG = {
   shipR: 3.3,                    // hit radius
   grazeBand: 23.0,               // how close counts as a graze (sized from the pilot histogram)
   camDist: 62,
+  fpvFov: 88,
   spawnAhead: 3600,              // world units of corridor kept populated
   baseSpeed: 5.0,                // units per 60hz frame at gear 0
   gearStep: 2.95,
@@ -787,6 +801,7 @@ const State = {
   best: parseFloat(localStorage.getItem('sr_best')||localStorage.getItem('hyperVHighScore')||0)||0,
   bestSector: parseInt(localStorage.getItem('sr_bestSector')||'1',10)||1,
   mouseSteer: localStorage.getItem('sr_mouse')==='1',
+  fpv: localStorage.getItem('sr_fpv')==='1',
   audioOn: localStorage.getItem('sr_audio')!=='0',
   seenTutorial: localStorage.getItem('sr_tut')==='1',
 
@@ -814,6 +829,7 @@ addEventListener('keydown', e=>{
     if(State.mode==='playing') pauseGame(); else if(State.mode==='paused') resumeGame();
   }
   if((e.code==='KeyX'||e.code==='KeyE') && State.mode==='playing') tryBreaker();
+  if(e.code==='KeyV') toggleFpv();
   if(e.code==='Space' && State.mode==='gameover') startRun();
   if(e.code==='Enter' && State.mode==='menu' && $('menu').classList.contains('on')) startRun();
 });
@@ -880,7 +896,7 @@ if(isTouch){
 /* ================================================================ RENDERER */
 let renderer, scene, camera, starLight, ambient, rimLight, skyLight, keyLight;
 let rimColor = new THREE.Color(0x9fd8ff);   // silhouette halo, tinted by the sector star
-let ship, shipGlow=[], shieldMesh, engineCones=[], noseLight=null;
+let ship, hullGroup=null, shipGlow=[], shieldMesh, engineCones=[], noseLight=null;
 let starGroup, starCore, starCorona, starHalo, starUniforms, starProms=[], starFlare=null, starRays=[];
 let nebula, dust, conduitRings=[], streaks, streakGeo;
 const Cam = { shake:0, roll:0, kick:0, fovBase:72 };
@@ -1194,46 +1210,59 @@ function generateStar(sector){
 }
 
 /* ------------------------------------------------------------------ SHIP */
+/* Same read as the asteroids: a dark back-face shell for silhouette, plus a
+   light edge wireframe. Every hull panel goes through this. */
+function shipPart(geo, mat, wireColor, silScale){
+  const m=new THREE.Mesh(geo, mat);
+  const sil=new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+    color:0x04050a, transparent:true, opacity:0.92, side:THREE.BackSide, depthWrite:false}));
+  sil.scale.setScalar(silScale||1.13);
+  m.add(sil);
+  m.add(new THREE.LineSegments(edgesFor(geo),
+    new THREE.LineBasicMaterial({color:wireColor||0xbfeee6, transparent:true, opacity:0.72})));
+  return m;
+}
+
 function buildShip(){
   ship = new THREE.Group();
+  hullGroup = new THREE.Group();       // everything you see of the ship itself
+  ship.add(hullGroup);
   const dark  = new THREE.MeshPhongMaterial({color:0x141a22, flatShading:true, shininess:36});
   const plate = new THREE.MeshPhongMaterial({color:0x2b3644, flatShading:true, shininess:60});
   const accent= new THREE.MeshPhongMaterial({color:0x22ffdd, flatShading:true, emissive:0x0a5f55, shininess:90});
   const glassM= new THREE.MeshPhongMaterial({color:0xffc233, flatShading:true, emissive:0x664400, shininess:120});
 
-  const outline=m=>{ m.add(new THREE.LineSegments(new THREE.EdgesGeometry(m.geometry),
-      new THREE.LineBasicMaterial({color:0x9ffff0, transparent:true, opacity:0.55}))); return m; };
-
   const bodyGeo=new THREE.CylinderGeometry(0.55,1.7,9,6); bodyGeo.rotateX(Math.PI/2);
-  ship.add(outline(new THREE.Mesh(bodyGeo,dark)));
+  hullGroup.add(shipPart(bodyGeo,dark));
   const noseGeo=new THREE.CylinderGeometry(0,0.55,4.4,6); noseGeo.rotateX(Math.PI/2);
-  const nose=outline(new THREE.Mesh(noseGeo,plate)); nose.position.z=-6.7; ship.add(nose);
+  const nose=shipPart(noseGeo,plate,0xd8fff6); nose.position.z=-6.7; hullGroup.add(nose);
 
-  const canopy=new THREE.Mesh(new THREE.BoxGeometry(1.15,1.05,3.2), glassM);
-  canopy.position.set(0,1.05,-1.1); canopy.rotation.x=-0.09; ship.add(canopy);
+  const canopy=shipPart(new THREE.BoxGeometry(1.15,1.05,3.2), glassM, 0xffe2a0, 1.16);
+  canopy.position.set(0,1.05,-1.1); canopy.rotation.x=-0.09; hullGroup.add(canopy);
 
   const wingGeo=new THREE.CylinderGeometry(0.12,4.6,7.6,3); wingGeo.rotateY(-Math.PI/2); wingGeo.scale(1,0.09,1);
-  const lw=outline(new THREE.Mesh(wingGeo,accent)); lw.position.set(-2.8,0.15,1.2); lw.rotation.z=Math.PI/13; ship.add(lw);
-  const rw=outline(new THREE.Mesh(wingGeo,accent)); rw.position.set(2.8,0.15,1.2); rw.rotation.y=Math.PI; rw.rotation.z=Math.PI/13; ship.add(rw);
+  const lw=shipPart(wingGeo,accent,0xaffff2); lw.position.set(-2.8,0.15,1.2); lw.rotation.z=Math.PI/13; hullGroup.add(lw);
+  const rw=shipPart(wingGeo,accent,0xaffff2); rw.position.set(2.8,0.15,1.2); rw.rotation.y=Math.PI; rw.rotation.z=Math.PI/13; hullGroup.add(rw);
   ship.userData.wings=[lw,rw];
 
   const finGeo=new THREE.CylinderGeometry(0.1,2.2,3.4,3); finGeo.scale(0.35,1,1);
-  const fin=new THREE.Mesh(finGeo,plate); fin.position.set(0,1.6,3.2); ship.add(fin);
+  const fin=shipPart(finGeo,plate); fin.position.set(0,1.6,3.2); hullGroup.add(fin);
 
   const engGeo=new THREE.CylinderGeometry(0.95,1.15,2.6,6); engGeo.rotateX(Math.PI/2);
   [-1.9,1.9].forEach(x=>{
-    const e=new THREE.Mesh(engGeo,plate); e.position.set(x,0.35,4.4); ship.add(e);
+    const e=shipPart(engGeo,plate); e.position.set(x,0.35,4.4); hullGroup.add(e);
     const cone=new THREE.Mesh(new THREE.ConeGeometry(0.85,5.5,8),
       new THREE.MeshBasicMaterial({color:0x66fff0,transparent:true,opacity:0.85,blending:THREE.AdditiveBlending,fog:false,depthWrite:false}));
-    cone.rotation.x=-Math.PI/2; cone.position.set(x,0.35,7.6); ship.add(cone); engineCones.push(cone);
+    cone.rotation.x=-Math.PI/2; cone.position.set(x,0.35,7.6); hullGroup.add(cone); engineCones.push(cone);
     const glow=new THREE.Sprite(new THREE.SpriteMaterial({map:glowTexture(),color:0x44ffe6,transparent:true,opacity:0.9,blending:THREE.AdditiveBlending,depthWrite:false,fog:false}));
-    glow.scale.setScalar(9); glow.position.set(x,0.35,6.2); ship.add(glow); shipGlow.push(glow);
+    glow.scale.setScalar(9); glow.position.set(x,0.35,6.2); hullGroup.add(glow); shipGlow.push(glow);
   });
 
   noseLight=new THREE.PointLight(0xffffff,2.6,340); noseLight.position.set(0,0.5,-8); ship.add(noseLight);
 
   shieldMesh = new THREE.Mesh(new THREE.IcosahedronGeometry(7.4,1),
-    new THREE.MeshBasicMaterial({color:0x48a8ff, wireframe:true, transparent:true, opacity:0.55, fog:false}));
+    new THREE.MeshBasicMaterial({color:0x48a8ff, wireframe:true, transparent:true, opacity:0.55,
+      fog:false, side:THREE.DoubleSide}));
   shieldMesh.visible=false; ship.add(shieldMesh);
 
   chargeGlow=new THREE.Sprite(new THREE.SpriteMaterial({map:glowTexture(),color:0x6fd0ff,
@@ -2550,6 +2579,20 @@ function blowout(){
   popup('OVERHEAT','#ff4444',Pl.x,Pl.y+12,0,1.1);
   if(S.hull<=0) die();
 }
+function toggleFpv(){
+  State.fpv=!State.fpv;
+  localStorage.setItem('sr_fpv', State.fpv?'1':'0');
+  $('fpv-frame').classList.toggle('on', State.fpv);
+  syncFpvButtons();
+  if(State.mode!=='menu') showWarn(State.fpv?'COCKPIT VIEW':'CHASE VIEW', '#22ffdd', 1.1);
+}
+function syncFpvButtons(){
+  const t='VIEW: '+(State.fpv?'COCKPIT':'CHASE');
+  const a=$('btn-fpv'), b=$('btn-fpv2');
+  if(a){ a.textContent=t; a.classList.toggle('active',State.fpv); }
+  if(b){ b.textContent=t; b.classList.toggle('active',State.fpv); }
+}
+
 function tryBreaker(){
   if(State.mode!=='playing' || breakerT>0 || State.flux<100) return;
   breakerT=CFG.breakerTime;
@@ -3003,6 +3046,30 @@ function updateCamera(dt){
   Cam.kick = damp(Cam.kick, 0, 7, dt);
   Cam.shake = damp(Cam.shake, 0, 3.4, dt);
 
+  const fpv = State.fpv && State.mode!=='menu';
+  if(hullGroup) hullGroup.visible = !fpv;
+  if(fpv){
+    // sit in the cockpit: the ship IS the camera, so the corridor rings and
+    // dust carry the sense of where you are in the lane
+    const sh=Cam.shake;
+    camera.position.x = damp(camera.position.x, Pl.x, 30, dt);
+    camera.position.y = damp(camera.position.y, Pl.y+1.15, 30, dt);
+    camera.position.z = damp(camera.position.z, -2.2 - inten*1.6 - brk*1.5, 8, dt);
+    if(sh>0.01){
+      camera.position.x += rnd(sh,-sh)*1.7;
+      camera.position.y += rnd(sh,-sh)*1.7;
+    }
+    const tf = CFG.fpvFov + inten*20 + brk*14 + Cam.kick*1.9;
+    if(Math.abs(camera.fov-tf)>0.02){ camera.fov=damp(camera.fov,tf,9,dt); camera.updateProjectionMatrix(); }
+    // bank harder than the chase cam - it is the only cue you have left
+    const roll = -Pl.vx*0.0017 + (sh>0.01?rnd(sh,-sh)*0.03:0);
+    camera.up.set(roll,1,0).normalize();
+    camLook.x = damp(camLook.x, Pl.x + clamp(Pl.vx*0.013,-10,10), 13, dt);
+    camLook.y = damp(camLook.y, Pl.y + 1.15 + clamp(Pl.vy*0.015,-10,10), 13, dt);
+    camera.lookAt(camLook.x, camLook.y, -170);
+    return;
+  }
+
   // follow vertical almost fully and sit only slightly above the ship, so climbing
   // and diving both keep the road ahead in view
   const tx=Pl.x*0.62, ty=Pl.y*0.80+5.5, tz=CFG.camDist + inten*11 + brk*9;
@@ -3443,6 +3510,10 @@ function initUI(){
   $('btn-how').onclick=()=>{ $('menu').classList.remove('on'); $('how').classList.add('on'); };
   $('btn-how-back').onclick=()=>{ $('how').classList.remove('on'); $('menu').classList.add('on'); };
   $('lb-more').onclick=()=>{ $('lb-more').style.display='none'; fetchBoard(100); };
+  $('btn-fpv').onclick=toggleFpv;
+  $('btn-fpv2').onclick=toggleFpv;
+  syncFpvButtons();
+  $('fpv-frame').classList.toggle('on', State.fpv);
   $('btn-mouse').onclick=()=>{
     State.mouseSteer=!State.mouseSteer;
     localStorage.setItem('sr_mouse',State.mouseSteer?'1':'0');
