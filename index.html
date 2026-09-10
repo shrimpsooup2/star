@@ -29,6 +29,11 @@ canvas#gl{display:block;position:fixed;inset:0;width:100%;height:100%;}
 
 /* ---------- FULL SCREEN FX LAYERS ---------- */
 .layer{position:fixed;inset:0;pointer-events:none;}
+#rays{z-index:2;opacity:0;will-change:transform,opacity;
+  width:220vmax;height:220vmax;position:fixed;left:0;top:0;
+  transform-origin:50% 50%;mix-blend-mode:screen;
+  -webkit-mask-image:radial-gradient(closest-side,rgba(0,0,0,1) 0%,rgba(0,0,0,.85) 22%,rgba(0,0,0,0) 62%);
+  mask-image:radial-gradient(closest-side,rgba(0,0,0,1) 0%,rgba(0,0,0,.85) 22%,rgba(0,0,0,0) 62%)}
 #grade{z-index:2}
 #vignette{
   z-index:3;
@@ -65,6 +70,8 @@ canvas#gl{display:block;position:fixed;inset:0;width:100%;height:100%;}
   text-anchor:middle;dominant-baseline:central}
 #gear-cap{font-family:var(--hud-font);font-weight:700;font-size:15px;letter-spacing:.2em;
   text-anchor:middle;fill:#22ffdd;opacity:.9}
+#pwr-cap{font-family:var(--hud-font);font-weight:700;font-size:13px;letter-spacing:.18em;
+  text-anchor:middle;fill:#48a8ff;opacity:.75}
 #sector-line{font-family:var(--hud-font);font-weight:700;font-size:15px;letter-spacing:.22em;
   text-anchor:middle;fill:#ffc233;opacity:.85}
 #brk-ready{font-family:var(--hud-font);font-weight:700;font-size:15px;letter-spacing:.14em;
@@ -213,7 +220,7 @@ button:active{transform:scale(.96)}
   #combo-line{font-size:9px;height:12px}
   #reticle{width:92px;height:92px;margin:-46px 0 0 -46px}
   .ring-txt{font-size:26px} #gear-num{font-size:74px}
-  #gear-cap,#sector-line,#brk-ready{font-size:20px}
+  #gear-cap,#sector-line,#brk-ready{font-size:20px} #pwr-cap{font-size:18px}
   .banner{font-size:52px} .banner.hint{font-size:30px}
 }
 @media (max-height:430px) and (orientation:landscape){
@@ -269,6 +276,7 @@ button:active{transform:scale(.96)}
 <body>
 <canvas id="gl"></canvas>
 
+<div id="rays" class="layer"></div>
 <div id="grade" class="layer"></div>
 <div id="speed-veil" class="layer"></div>
 <div id="vignette" class="layer"></div>
@@ -304,6 +312,9 @@ button:active{transform:scale(.96)}
     <path class="arc-bg" stroke="#0b4a52" d="M 764 700 Q 868 500 764 300"/>
     <path class="arc" id="arc-gear" stroke="#22ffdd" d="M 764 700 Q 868 500 764 300"/>
     <path class="arc-thin" id="arc-heat" stroke="#ffc233" d="M 742 690 Q 848 500 742 310" opacity="0"/>
+    <path class="arc-bg" stroke="#123a5c" stroke-width="6" d="M 258 690 Q 152 500 258 310"/>
+    <path class="arc-thin" id="arc-power" stroke="#48a8ff" d="M 258 690 Q 152 500 258 310"/>
+    <text id="pwr-cap" x="300" y="742">PWR</text>
     <text class="ring-txt" x="906" y="500" text-anchor="middle" color="#22ffdd"
           transform="rotate(90 906 500)">GEAR</text>
     <text id="gear-num" x="700" y="500">C</text>
@@ -397,7 +408,7 @@ button:active{transform:scale(.96)}
     Holding <em>[SPACE]</em> winds the cannon up; letting go fires whatever you charged.
     A <b>tap</b> throws twin bolts. A <b>half charge</b> is a heavy slug that cracks big rock.
     A <b>full charge</b> is the <em>LANCE</em> &mdash; a beam that runs the length of the corridor and
-    kills everything standing in it. Charge costs energy, so the lance is a decision, not a habit.<br><br>
+    kills everything standing in it. Every shot spends <em>PWR</em> and stalls the recharge for a moment: a lance is roughly half your reserve, so it is a decision, not a habit. Watch the blue arc.<br><br>
     Careful what you shoot: a destroyed rock is a graze you will never bank, and
     <em>brittle rock</em> answers a hit by becoming three smaller rocks.</p>
 
@@ -419,7 +430,7 @@ button:active{transform:scale(.96)}
     heat climbs until the drive blows. Grazing is the only coolant.<br><br>
     <b>BREAKER.</b> Flux fills the ring. Fire it to become an invulnerable battering ram for six seconds &mdash;
     everything you touch dies and pays double.<br><br>
-    <b>THE RING.</b> Hull above you, star distance below, breaker to your left, gearbox to your right.<br><br>
+    <b>THE RING.</b> Hull above you, star distance below, breaker to your left, gearbox to your right. The thin inner arcs are <em>PWR</em> (cannon energy, left) and <em>HEAT</em> (drive, right).<br><br>
     <b>THE STAR.</b> Cross the sector to reach it. The last stretch is the <em>CORONA RUN</em> &mdash;
     survive the flares, detonate the star, bank the bonus, repeat forever.
     </p>
@@ -487,7 +498,7 @@ button:active{transform:scale(.96)}
 const CFG = {
   boundX: 76, boundY: 42,        // playfield half-extents at the ship plane
   shipR: 3.3,                    // hit radius
-  grazeBand: 12.5,               // how close counts as a graze
+  grazeBand: 23.0,               // how close counts as a graze (sized from the pilot histogram)
   camDist: 62,
   spawnAhead: 3600,              // world units of corridor kept populated
   baseSpeed: 5.0,                // units per 60hz frame at gear 0
@@ -497,8 +508,9 @@ const CFG = {
   breakerTime: 6.0,
   iFrames: 1.15,
   comboWindow: 2.6,
-  energyMax: 100, energyRegen: 0.62, shotCost: 13, fireDelay: 0.115,
-  chargeTime: 0.9, tapCost: 11, slugCost: 26, lanceCost: 48,
+  energyMax: 100, energyRegen: 0.235, shotCost: 13, fireDelay: 0.115,
+  rechargeDelay: 0.5,
+  chargeTime: 0.9, tapCost: 12, slugCost: 30, lanceCost: 55,
   lanceR: 13, lanceLen: 3200,
   bulletSpeed: 46,
   maxShields: 5,
@@ -782,7 +794,7 @@ const State = {
   dist:0, target:16000, totalDist:0,
   speed:CFG.baseSpeed, gear:0, shiftBar:0, heat:0, blowoutLock:0, heatWarned:false,
   hull:100, shields:0, iFrame:0,
-  flux:0, breaker:0, energy:CFG.energyMax, fireCd:0, charging:false, charge:0,
+  flux:0, breaker:0, energy:CFG.energyMax, fireCd:0, charging:false, charge:0, rechargeT:0,
   combo:0, comboTimer:0, bestCombo:0, mult:1,
   grazes:0, kills:0, gates:0, topSpeed:0, sectorNoHit:true,
   time:0, coronaAnnounced:false, prevMode:'menu',
@@ -869,7 +881,7 @@ if(isTouch){
 let renderer, scene, camera, starLight, ambient, rimLight, skyLight, keyLight;
 let rimColor = new THREE.Color(0x9fd8ff);   // silhouette halo, tinted by the sector star
 let ship, shipGlow=[], shieldMesh, engineCones=[], noseLight=null;
-let starGroup, starCore, starCorona, starHalo, starUniforms, starProms=[], starFlare=null;
+let starGroup, starCore, starCorona, starHalo, starUniforms, starProms=[], starFlare=null, starRays=[];
 let nebula, dust, conduitRings=[], streaks, streakGeo;
 const Cam = { shake:0, roll:0, kick:0, fovBase:72 };
 const camLook = { x:0, y:0 };
@@ -1074,13 +1086,13 @@ function buildStar(){
         float tot = (n1 + n2*0.5 + n3*0.25)/1.75;
         float e = mix(0.34,0.05,contrast);
         float spots = smoothstep(0.5-e, 0.5+e, tot);
-        vec3 dark = baseColor*mix(0.55,0.10,contrast);
-        vec3 bright = baseColor*mix(1.25,3.0,contrast);
+        vec3 dark = baseColor*mix(0.42,0.08,contrast);
+        vec3 bright = baseColor*mix(0.95,1.9,contrast);
         vec3 col = mix(dark,bright,spots);
         // granulation + limb brightening
-        col += baseColor*pow(n3,3.0)*0.7;
+        col += baseColor*pow(n3,3.0)*0.45;
         float limb = pow(1.0-abs(dot(vN,vec3(0.0,0.0,1.0))), 2.0);
-        col += baseColor*limb*0.85;
+        col += baseColor*limb*0.55;
         gl_FragColor = vec4(col,1.0);
       }`
   });
@@ -1103,6 +1115,15 @@ function buildStar(){
       new THREE.MeshBasicMaterial({color:0xffcc66, transparent:true, opacity:0.5,
         blending:THREE.AdditiveBlending, depthWrite:false, fog:false}));
     starGroup.add(p); starProms.push(p);
+  }
+  // long shafts radiating off the disc, apex at the core
+  starRays=[];
+  for(let i=0;i<10;i++){
+    const c=new THREE.Mesh(new THREE.ConeGeometry(0.085, 2.6, 4, 1, true),
+      new THREE.MeshBasicMaterial({color:0xffcc66, transparent:true, opacity:0.10,
+        blending:THREE.AdditiveBlending, depthWrite:false, fog:false, side:THREE.DoubleSide}));
+    c.geometry.translate(0, 1.3, 0);          // apex at the star centre
+    starGroup.add(c); starRays.push(c);
   }
   starFlare = new THREE.Sprite(new THREE.SpriteMaterial({map:glowTexture(), color:0xffcc66,
     transparent:true, opacity:0.5, blending:THREE.AdditiveBlending, depthWrite:false, fog:false}));
@@ -1133,6 +1154,24 @@ function generateStar(sector){
     p.userData.drift=rnd(0.25,-0.25);
   });
   if(starFlare) starFlare.material.color.setHSL(hue, sat*0.8, Math.min(1,lit+0.35));
+  starRays.forEach((c,i)=>{
+    const a=(i/starRays.length)*Math.PI*2 + rnd(0.25);
+    c.rotation.set(rnd(0.5,-0.5), 0, a);
+    c.scale.set(rnd(1.5,0.6), rnd(1.9,0.9), 1);
+    c.material.color.setHSL(hue, Math.max(0,sat-0.15), Math.min(1,lit+0.4));
+    c.userData.base=rnd(0.13,0.05);
+  });
+  // build the screen-space shafts from the same palette
+  const rc=new THREE.Color().setHSL(hue, Math.max(0,sat-0.2), Math.min(1,lit+0.42));
+  const rgb=`${Math.round(rc.r*255)},${Math.round(rc.g*255)},${Math.round(rc.b*255)}`;
+  let stops=[], ang=0;
+  while(ang<360){
+    const w=1.2+Math.random()*3.4, gap=4+Math.random()*11;
+    stops.push(`transparent ${ang}deg`, `rgba(${rgb},${(0.05+Math.random()*0.12).toFixed(3)}) ${ang+0.4}deg`,
+               `rgba(${rgb},${(0.05+Math.random()*0.12).toFixed(3)}) ${ang+w}deg`, `transparent ${ang+w+0.4}deg`);
+    ang += w+gap;
+  }
+  $('rays').style.background = `conic-gradient(from 0deg, ${stops.join(',')})`;
   starHalo.material.color = col;
   starLight.color = col.clone().lerp(new THREE.Color(0xffffff),0.35);
   starProps.lightBase = 1.8+Math.random()*1.4;
@@ -1256,31 +1295,46 @@ function makeArchGeo(){
 }
 
 function makeRockGeo(){
+  // the original game's plain dodecahedron, only lightly knocked about so the
+  // silhouette still reads as one solid chunk of rock
   const g=new THREE.DodecahedronGeometry(1,0);
   const p=g.attributes.position;
   for(let i=0;i<p.count;i++){
-    const s=0.72+Math.random()*0.55;
-    p.setXYZ(i,p.getX(i)*s,p.getY(i)*s*rnd(1.15,0.85),p.getZ(i)*s);
+    const s=0.92+Math.random()*0.16;
+    p.setXYZ(i,p.getX(i)*s,p.getY(i)*s*rnd(1.06,0.94),p.getZ(i)*s);
   }
   g.computeVertexNormals();
   return g;
 }
 
-/* A rock body plus a back-face shell. The shell only shows as a fringe around
-   the silhouette, which is what makes an unlit rock readable against black. */
-function rockMesh(geo, color, haloScale){
+/* Rock readability has to survive two opposite backgrounds: empty black space
+   and a star that fills the screen. So every rock carries both a DARK back-face
+   shell (a silhouette edge, which is what separates it from a blown-out star)
+   and the original game's light edge wireframe (which is what reads against
+   black). One of the two always has contrast. */
+const _edgeCache = new Map();
+function edgesFor(geo){
+  let e=_edgeCache.get(geo);
+  if(!e){ e=new THREE.EdgesGeometry(geo); _edgeCache.set(geo,e); }
+  return e;
+}
+function rockMesh(geo, color, haloScale, wire){
   const m=new THREE.Mesh(geo, new THREE.MeshPhongMaterial({
-    color, flatShading:true, shininess:6, emissive:0x141018, specular:0x332b22 }));
-  const halo=new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
-    color:rimColor.getHex(), transparent:true, opacity:0.55, side:THREE.BackSide,
-    blending:THREE.AdditiveBlending, depthWrite:false }));
-  halo.scale.setScalar(haloScale||1.10);
-  m.add(halo); m.userData.halo=halo;
+    color, flatShading:true, shininess:6, emissive:0x0e0c12, specular:0x332b22 }));
+  const sil=new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+    color:0x04050a, transparent:true, opacity:0.92, side:THREE.BackSide, depthWrite:false }));
+  sil.scale.setScalar((haloScale||1.10)+0.05);
+  m.add(sil); m.userData.sil=sil;
+  if(wire!==false){
+    const el=new THREE.LineSegments(edgesFor(geo),
+      new THREE.LineBasicMaterial({color:0xcfc4b4, transparent:true, opacity:0.55}));
+    m.add(el); m.userData.halo=el;      // brightened by proximity, see stepWorld
+  }
   return m;
 }
 function tintHalo(mesh, mul){
   const h=mesh.userData.halo; if(!h) return;
-  h.material.color.copy(rimColor).multiplyScalar(mul||1);
+  h.material.color.copy(rimColor).lerp(new THREE.Color(0xffffff), 0.55).multiplyScalar(mul||1);
 }
 
 function newMesh(type){
@@ -1308,11 +1362,11 @@ function newMesh(type){
     m.add(dust); m.userData.dust=dust;
   } else if(type==='comet'){
     m=new THREE.Group();
-    const body=rockMesh(pick(rockGeos), 0xbfe6ff, 1.25);
+    const body=rockMesh(pick(rockGeos), 0x8fc4e8, 1.18);
     m.add(body); m.userData.body=body;
-    const coma=new THREE.Sprite(new THREE.SpriteMaterial({map:glowTexture(),color:0xaee8ff,
-      transparent:true,opacity:0.85,blending:THREE.AdditiveBlending,depthWrite:false,fog:false}));
-    coma.scale.setScalar(22); m.add(coma); m.userData.coma=coma;
+    const coma=new THREE.Sprite(new THREE.SpriteMaterial({map:glowTexture(),color:0x7fd0f0,
+      transparent:true,opacity:0.55,blending:THREE.AdditiveBlending,depthWrite:false,fog:false}));
+    coma.scale.setScalar(18); m.add(coma); m.userData.coma=coma;
   } else if(type==='cloud'){
     // drifting dust bank: no damage, but it drags the drive and hides what is inside
     m=new THREE.Group();
@@ -1458,7 +1512,7 @@ function spawn(type, x, y, z, opt={}){
     const sp=opt.cross||rnd(46,26);
     const a=opt.dir!==undefined?opt.dir:rnd(6.3);
     e.vx=Math.cos(a)*sp; e.vy=Math.sin(a)*sp*0.7;
-    tintHalo(mesh.userData.body, 2.0);
+    tintHalo(mesh.userData.body, 1.3);
   } else if(type==='cloud'){
     e.r=opt.r||42; e.depth=opt.depth||260; e.grazeR=0; e.hp=999;
     mesh.userData.puffs.forEach(p=>{
@@ -1549,6 +1603,7 @@ function releaseShot(c){
   while(tier>0 && S.energy < cost[tier]) tier--;
   if(S.energy < cost[0]){ Audio_.dryFire(); Cam.kick+=0.1; return; }
   S.energy -= cost[tier];
+  S.rechargeT = CFG.rechargeDelay*(1+tier*0.55);
 
   if(tier===0){
     fireBullet(Pl.x-2.6, Pl.y, 1); fireBullet(Pl.x+2.6, Pl.y, 1);
@@ -1932,18 +1987,16 @@ function laneNormal(lane, t){
   return {x:-dy/m, y:dx/m};
 }
 
-/* Distance from the lane to a rock CENTRE, in units of the graze band.
-      hit    when dist < rockR + shipR
-      graze  when dist < rockR + grazeBand
-   so dist = rockR + shipR + grazeBand*k grazes only while
-      k < 1 - shipR/grazeBand  (~0.74 here).
-   k around 0.55 leaves the ship ~7 units of error either way and still
-   banks the graze: that is what makes the ideal line the tight line.
-   k above 0.75 is deliberate breathing room, not a mistake. */
-const GRAZE_K = 1 - CFG.shipR/CFG.grazeBand;
-function clearance(rockR, d, tight){
-  const k = clamp((tight===undefined?GRAZE_K*0.81:tight) - d*0.06 - (State.mod.tight||0), 0.46, 1.40);
-  return rockR + CFG.shipR + CFG.grazeBand*k;
+/* Distance from the lane to a rock CENTRE.
+      hit   when dist < rockR + shipR
+      graze when dist < rockR + grazeBand
+   `pad` is the gap in WORLD UNITS between the ship's hitbox and the rock when
+   the ship sits exactly on the lane. Well under grazeBand - shipR so the lane
+   grazes, but small enough that a pilot who is OFF the lane still does — which
+   is the case that actually matters. Large pads are breathing room by intent. */
+function clearance(rockR, d, pad){
+  const p = clamp((pad===undefined?7.5:pad) - d*0.8 - (State.mod.tight||0), 5.5, 22);
+  return rockR + CFG.shipR + p;
 }
 
 /* Pick the rock BEFORE the clearance, so the gap is sized to the rock that
@@ -1979,12 +2032,13 @@ function flank(lane, z0, len, z, d, opt={}){
   const p=lane(t), n=laneNormal(lane,t);
   const sides = opt.side ? [opt.side] : [-1,1];
   const depth = opt.depth||2;
+  const pad = opt.pad;
   for(const side of sides){
     let off=0;
     for(let k=0;k<depth;k++){
       const spec=pickRock(opt.bigP);
       // first rock sits at graze clearance; the rest stack outward behind it
-      off = k===0 ? clearance(spec.rr, d, opt.tight) : off + spec.rr*2.1;
+      off = k===0 ? clearance(spec.rr, d, pad) : off + spec.rr*2.1;
       placeRock(spec, p.x+n.x*off*side, p.y+n.y*off*side, z);
     }
   }
@@ -2009,7 +2063,7 @@ const FORMS = {
     const rows=Math.round(13*(State.mod.density||1));
     for(let i=0;i<rows;i++){
       const t=i/(rows-1), z=z0-t*len;
-      flank(lane, z0, len, z, d, {depth:2, tight:0.58, bigP:0.14});
+      flank(lane, z0, len, z, d, {depth:2, pad:7.3, bigP:0.14});
     }
     for(let i=0;i<4;i++){ const t=0.15+i*0.24, p=lane(t); crystalAt(p.x,p.y,z0-t*len); }
     return {len, lane};
@@ -2027,14 +2081,14 @@ const FORMS = {
       for(let k=0;k<4;k++){
         const rz=z-rnd(70), rt=tAt(z0,len,rz);
         const q=lane(rt), n=laneNormal(lane,rt), spec=pickRock(0.22);
-        off = k===0 ? clearance(spec.rr, d, 0.56) : off + spec.rr*2.1;
+        off = k===0 ? clearance(spec.rr, d, 7.0) : off + spec.rr*2.1;
         placeRock(spec, q.x+n.x*off, q.y+n.y*off, rz);
       }
       let ioff=0;
       for(let k=0;k<2;k++){
         const rz=z-rnd(70), rt=tAt(z0,len,rz);
         const q=lane(rt), n=laneNormal(lane,rt), spec=pickRock(0.10);
-        ioff = k===0 ? clearance(spec.rr, d, 0.66) : ioff + spec.rr*2.1;
+        ioff = k===0 ? clearance(spec.rr, d, 8.3) : ioff + spec.rr*2.1;
         placeRock(spec, q.x-n.x*ioff, q.y-n.y*ioff, rz);
       }
     }
@@ -2048,7 +2102,7 @@ const FORMS = {
     const rows=16;
     for(let i=0;i<rows;i++){
       const t=i/(rows-1), z=z0-t*len;
-      flank(lane, z0, len, z, d, {depth:2, tight:0.50, bigP:0.03});
+      flank(lane, z0, len, z, d, {depth:2, pad:6.2, bigP:0.03});
     }
     for(let i=0;i<5;i++){ const t=i/4, p=lane(t); crystalAt(p.x,p.y,z0-t*len); }
     return {len, lane};
@@ -2060,7 +2114,7 @@ const FORMS = {
     const gates=3;
     for(let g=0;g<gates;g++){
       const t=(g+0.5)/gates, z=z0-t*len;
-      const p=lane(t), rr=5.4, c=clearance(rr,d,0.72);
+      const p=lane(t), rr=5.4, c=clearance(rr,d,9.0);
       const ring=9;
       for(let k=0;k<ring;k++){
         const a=(k/ring)*Math.PI*2+rnd(0.3);
@@ -2091,7 +2145,7 @@ const FORMS = {
     for(let i=0;i<n;i++){
       const t=(i+0.5)/n, z=z0-t*len, p=lane(t);
       spawn('gate', p.x, p.y, z, {R: clamp(22-d*1.5,14,22)});
-      if(chance(0.6)) flank(lane, z0, len, z-150, d, {depth:1, tight:1.05, bigP:0.2});
+      if(chance(0.6)) flank(lane, z0, len, z-150, d, {depth:1, pad:13, bigP:0.2});
     }
     return {len, lane};
   }},
@@ -2102,8 +2156,8 @@ const FORMS = {
     const rows=12;
     for(let i=0;i<rows;i++){
       const t=i/(rows-1), z=z0-t*len;
-      const tight = lerp(1.10, 0.47, t);
-      flank(lane, z0, len, z, d, {depth:2, tight, bigP:0.3});
+      const pad = lerp(13.8, 5.9, t);
+      flank(lane, z0, len, z, d, {depth:2, pad, bigP:0.3});
     }
     const pe=lane(1); crystalAt(pe.x,pe.y,z0-len-70);
     return {len, lane};
@@ -2121,7 +2175,7 @@ const FORMS = {
       void z;
       // push anything sitting on the lane out to the channel edge
       const off=(x-p.x)*n2.x+(y-p.y)*n2.y;
-      const c=clearance(4.2,d,0.56);
+      const c=clearance(4.2,d,7.0);
       // anything near the channel is packed onto its edge, so the cut reads
       // as two walls you can shave rather than a vague thinning
       if(Math.abs(off)<c*2.3){
@@ -2148,7 +2202,7 @@ const FORMS = {
          spin:rnd(0.9,0.35)*(chance(0.5)?1:-1)});
       // start the pair broadside to the lane so the gap faces you on arrival
       if(e){ e.ang=Math.atan2(nm.y,nm.x); e.mesh.rotation.z=e.ang; }
-      if(chance(0.5)) flank(lane, z0, len, z-180, d, {depth:1, tight:1.05, bigP:0.15});
+      if(chance(0.5)) flank(lane, z0, len, z-180, d, {depth:1, pad:13, bigP:0.15});
     }
     return {len, lane};
   }},
@@ -2163,7 +2217,7 @@ const FORMS = {
         if(chance(0.22)) continue;               // leave the odd bay open
         const half=rnd(30,18), th=rnd(4.6,3.0);
         // it lies ALONG the wall, so only its thickness faces the lane
-        const c=clearance(th, d, 0.58);
+        const c=clearance(th, d, 7.3);
         const ang=Math.atan2(-nm.x, nm.y);
         spawn('spire', p.x+nm.x*c*side, p.y+nm.y*c*side, z,
               {halfLen:half, th, ang});
@@ -2179,7 +2233,7 @@ const FORMS = {
     const rows=11;
     for(let i=0;i<rows;i++){
       const t=i/(rows-1), z=z0-t*len;
-      flank(lane, z0, len, z, d, {depth:3, tight:0.62, bigP:0.22});
+      flank(lane, z0, len, z, d, {depth:3, pad:7.8, bigP:0.22});
     }
     for(let i=0;i<3;i++){ const t=0.2+i*0.3, p=lane(t); crystalAt(p.x,p.y,z0-t*len); }
     return {len, lane};
@@ -2196,7 +2250,7 @@ const FORMS = {
     const n=Math.round(5*(State.mod.density||1));
     for(let i=0;i<n;i++){
       const t=Math.random(), p=lane(t), nm=laneNormal(lane,t);
-      const off=(clearance(5,d,1.35)+rnd(30))*(chance(0.5)?1:-1);
+      const off=(clearance(5,d,17)+rnd(30))*(chance(0.5)?1:-1);
       laneRock(p.x+nm.x*off, p.y+nm.y*off, z0-t*len, 0.25);
     }
     return {len, lane};
@@ -2211,7 +2265,7 @@ const FORMS = {
     }
     for(let i=0;i<3;i++){
       const t=Math.random(), p=lane(t), nm=laneNormal(lane,t);
-      const off=(clearance(5,d,1.1)+rnd(24))*(chance(0.5)?1:-1);
+      const off=(clearance(5,d,13.8)+rnd(24))*(chance(0.5)?1:-1);
       laneRock(p.x+nm.x*off, p.y+nm.y*off, z0-t*len, 0.2);
     }
     return {len, lane};
@@ -2237,7 +2291,7 @@ function decorate(z0, len, lane, d){
     const n=2+Math.round(d);
     for(let i=0;i<n;i++){
       const t=Math.random(), p=lane(t), nm=laneNormal(lane,t);
-      const q=offLane(p, nm, clearance(6,d,1.7)+rnd(40));
+      const q=offLane(p, nm, clearance(6,d,21)+rnd(40));
       if(q) spawn('comet', q.x, q.y, z0-t*len, {r:rnd(7,4.5), cross:rnd(48,26)});
     }
   }
@@ -2251,7 +2305,7 @@ function decorate(z0, len, lane, d){
   if(m.spires && chance(0.6)){
     const t=Math.random(), p=lane(t), nm=laneNormal(lane,t);
     const half=rnd(30,18), th=rnd(4.4,3);
-    const q=offLane(p, nm, clearance(th,d,1.0));
+    const q=offLane(p, nm, clearance(th,d,12.5));
     if(q) spawn('spire', q.x, q.y, z0-t*len,
                 {halfLen:half, th, ang:Math.atan2(-nm.x, nm.y)});
   }
@@ -2409,7 +2463,8 @@ function updatePlayer(dt, ds, frozen){
 
   /* ---- pulse cannon: hold to charge, release to fire ---- */
   S.fireCd -= dt;
-  S.energy = Math.min(CFG.energyMax, S.energy + CFG.energyRegen*60*dt*(breakerT>0?2:1));
+  if(S.rechargeT>0) S.rechargeT-=dt;
+  else S.energy = Math.min(CFG.energyMax, S.energy + CFG.energyRegen*60*dt*(breakerT>0?2.2:1));
   const canShoot = !frozen && S.mode==='playing';
   if(Input.fire && canShoot){
     if(!S.charging){ S.charging=true; S.charge=0; Audio_.chargeOn(); }
@@ -2531,10 +2586,9 @@ function doGraze(e, sx, sy){
   e.grazed=true;
   State.grazes++;
   addCombo(1);
-  State.flux = Math.min(100, State.flux + (e.type==='mine'?7:e.type==='wall'?5:4));
-  State.heat = Math.max(0, State.heat - 9);
-  addScore(40, e.x, e.y, 4, '#22ffdd', Math.floor(State.combo)%5===0?'GRAZE':'', 0.8);
-  if(Math.floor(State.combo)%5!==0) popup('+'+fmt(40*State.mult), '#9ffff0', e.x, e.y, 4, 0.72);
+  State.flux = Math.min(100, State.flux + (e.type==='mine'?4:e.type==='wall'?3:2.5));
+  State.heat = Math.max(0, State.heat - 5);
+  addScore(30, e.x, e.y, 4, '#22ffdd', Math.floor(State.combo)%10===0?'GRAZE':'', 0.9);
   emit((sx+e.x)/2,(sy+e.y)/2,2,4,0x22ffdd,26,5,0.32);
   shockRing((sx+e.x)/2,(sy+e.y)/2,2, 0x22ffdd, 120, 0.22, 1.5);
   Audio_.graze(State.combo);
@@ -2628,6 +2682,21 @@ function stepWorld(dt, ds){
   }
   starHalo.material.opacity = 0.10 + prox*0.30;
   if(starFlare) starFlare.scale.setScalar(3.0 + prox*3.5);
+  starRays.forEach((c,i)=>{
+    c.material.opacity = (c.userData.base||0.08) * (0.55+prox*1.6)
+      * (0.75+0.25*Math.sin(State.time*(0.7+i*0.13)+i));
+    c.rotation.z += 0.02*dt*(i%2?1:-1);
+  });
+  // screen-space shafts: anchored to where the star actually projects
+  const rays=$('rays');
+  if(rays){
+    _v3.set(starGroup.position.x, starGroup.position.y, starGroup.position.z).project(camera);
+    const sx=(_v3.x*0.5+0.5)*innerWidth, sy=(-_v3.y*0.5+0.5)*innerHeight;
+    const vis = _v3.z<1 ? clamp(prox*1.15, 0, 1) : 0;
+    rays.style.opacity = String(vis*0.85);
+    if(vis>0.01)
+      rays.style.transform = `translate(${sx}px,${sy}px) translate(-50%,-50%) rotate(${State.time*1.6}deg)`;
+  }
   animateStar(dt);
 
   /* entities */
@@ -2638,8 +2707,8 @@ function stepWorld(dt, ds){
 
     if(e.type==='ast' || e.type==='splitter'){
       m.rotation.x+=e.spinX*ds; m.rotation.y+=e.spinY*ds;
-      const halo=m.userData.halo;
-      if(halo) halo.material.opacity = 0.30 + 0.55*clamp(1-(-e.z)/1500, 0, 1);
+      const halo=m.userData.halo;   // edge wireframe: sharpens as it closes
+      if(halo) halo.material.opacity = 0.34 + 0.58*clamp(1-(-e.z)/1500, 0, 1);
       if(e.vx||e.vy){ e.x+=e.vx*dt; e.y+=e.vy*dt; }
       if(e.type==='splitter'){
         const pu=0.4+Math.sin(State.time*4+e.t)*0.22;
@@ -2666,7 +2735,7 @@ function stepWorld(dt, ds){
       e.x=clamp(e.x,-lx,lx); e.y=clamp(e.y,-ly,ly);
       m.userData.body.rotation.x+=2*dt; m.userData.body.rotation.y+=1.4*dt;
       const pu=0.7+Math.sin(State.time*9+e.t)*0.3;
-      m.userData.coma.scale.setScalar(16+pu*9);
+      m.userData.coma.scale.setScalar(13+pu*7);
       if(e.z>-2600 && Math.random()<0.75)
         emit(e.x,e.y,e.z, 1, 0x9fe4ff, 8, 6, 0.55);
     }
@@ -2968,7 +3037,7 @@ function setTxt(el,v){ if(HC[el]!==v){ HC[el]=v; $(el).textContent=v; } }
 
 const ARCS={};
 function initHudBits(){
-  ['arc-hull','arc-dist','arc-brk','arc-gear','arc-heat'].forEach(id=>{
+  ['arc-hull','arc-dist','arc-brk','arc-gear','arc-heat','arc-power'].forEach(id=>{
     const p=$(id), L=p.getTotalLength();
     ARCS[id]=L; p.style.strokeDasharray=L; p.style.strokeDashoffset=L;
   });
@@ -3031,6 +3100,11 @@ function updateHUD(dt){
   const hop = heatOn ? String(Math.min(1,0.35+S.heat/100)) : '0';
   if(HC.heatop!==hop){ HC.heatop=hop; $('arc-heat').setAttribute('opacity',hop); }
   setStroke('arc-heat', S.heat>72 ? '#ff4444' : '#ffc233');
+
+  /* --- left inner: cannon power, mirroring heat on the right --- */
+  setArc('arc-power', S.energy/CFG.energyMax);
+  setStroke('arc-power', S.energy<CFG.tapCost ? '#ff5555'
+            : S.rechargeT>0 ? '#2f6f9f' : '#48a8ff');
 
   /* --- reticle: aim point plus the charge ring --- */
   _v3.set(Pl.x, Pl.y, -70).project(camera);
@@ -3107,7 +3181,7 @@ function resetRun(){
   S.gear=0; S.shiftBar=0; S.heat=0; S.blowoutLock=0; S.heatWarned=false; S.speed=CFG.baseSpeed*0.3;
   S.combo=0; S.comboTimer=0; S.bestCombo=0; S.mult=1;
   S.grazes=0; S.kills=0; S.gates=0; S.topSpeed=0; S.totalDist=0;
-  S.fireCd=0; S.charging=false; S.charge=0;
+  S.fireCd=0; S.charging=false; S.charge=0; S.rechargeT=0;
   if(lance) lance.visible=false; lanceT=0;
   breakerT=0; deathT=0; detT=0;
   Pl.x=0; Pl.y=0; Pl.vx=0; Pl.vy=0; Pl.px=0; Pl.py=0;
