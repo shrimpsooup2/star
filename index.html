@@ -1847,17 +1847,21 @@ function updatePopups(dt, worldSpeed){
    Each sector rolls a modifier that reweights the encounter table, so runs
    read as designed sets rather than random noise.
    ======================================================================= */
+/* ================================================================ SECTORS
+   A sector rolls a modifier. Modifiers no longer pick which random scatter
+   you get — they decide what the formations are BUILT FROM and what drifts
+   over the top of them, so the same shape reads differently every run.
+   ======================================================================= */
 const MODS = [
-  { id:'DEBRIS FIELD',  desc:'STANDARD HAZARD MIX',      w:{field:3,corridor:2,slalom:2,gauntlet:1,ringrun:1,minefield:1,tunnel:1,cross:1,treasure:1,swarm:1,pincer:1,tumblers:1,spires:1,brittle:1} },
-  { id:'DENSE PACK',    desc:'ROCK DENSITY +45%',        density:1.45, w:{field:4,corridor:3,swarm:3,tunnel:2,cross:2,slalom:2,treasure:1,brittle:2} },
-  { id:'VOLATILE ROCK', desc:'UNSTABLE MOLTEN BODIES',   w:{minefield:5,field:2,corridor:2,treasure:1,gauntlet:1,brittle:2} },
-  { id:'THE GAUNTLET',  desc:'RIDGES AND SPLINTERS',     w:{gauntlet:5,pincer:2,slalom:2,spires:3,field:1,ringrun:1} },
-  { id:'SOLAR STORM',   desc:'CORONAL EJECTIONS',        flares:true, w:{field:2,flarewall:4,corridor:2,swarm:2,minefield:1,comets:2} },
-  { id:'STONE ARCHES',  desc:'NAVIGATION TRIAL &middot; BONUS FLUX', w:{ringrun:5,corridor:2,treasure:2,field:1,tunnel:1,tumblers:1} },
-  { id:'SALVAGE LANE',  desc:'CRYSTAL RICH',             w:{treasure:4,corridor:3,tunnel:2,field:2,brittle:1} },
-  { id:'DUST BANKS',    desc:'LOW VISIBILITY',           w:{duststorm:5,field:2,corridor:2,tumblers:1,spires:1} },
-  { id:'COMET TRAIL',   desc:'FAST CROSSING BODIES',     w:{comets:5,field:2,swarm:2,tumblers:2,brittle:1} },
-  { id:'THE ORRERY',    desc:'TURNING ROCK PAIRS',       w:{tumblers:5,spires:2,ringrun:2,field:1,cross:1} },
+  { id:'DEBRIS FIELD', desc:'STANDARD HAZARD MIX', mix:{} },
+  { id:'DENSE PACK',   desc:'ROCK DENSITY +45%',   mix:{}, density:1.45, tight:0.08 },
+  { id:'VOLATILE ROCK',desc:'UNSTABLE MOLTEN BODIES', mix:{volatile:0.26} },
+  { id:'BRITTLE SEAM', desc:'ROCK THAT SHATTERS',  mix:{brittle:0.30} },
+  { id:'SOLAR STORM',  desc:'CORONAL EJECTIONS',   mix:{}, flares:true },
+  { id:'COMET TRAIL',  desc:'FAST CROSSING BODIES',mix:{}, comets:true },
+  { id:'DUST BANKS',   desc:'LOW VISIBILITY',      mix:{}, clouds:true },
+  { id:'SPLINTER BELT',desc:'SHEARED STONE',       mix:{brittle:0.12}, spires:true },
+  { id:'SALVAGE LANE', desc:'CRYSTAL RICH',        mix:{}, rich:true },
 ];
 
 let spawnCursor = 0;   // distance at which the next encounter begins
@@ -1880,246 +1884,427 @@ function astAt(x,y,z,bigP=0.28){
 }
 function crystalAt(x,y,z){ return spawn('pickup',x,y,z,{kind:'crystal'}); }
 
-const PATTERNS = {
-  /* scattered rocks — the breather */
-  field(z0,d){
-    const len=1000, n=Math.round((6+d*4)*(State.mod.density||1));
-    for(let i=0;i<n;i++)
-      astAt(rnd(CFG.boundX*0.94,-CFG.boundX*0.94), rnd(CFG.boundY*0.94,-CFG.boundY*0.94), z0-rnd(len));
-    if(chance(0.5)) crystalAt(rnd(CFG.boundX*0.6,-CFG.boundX*0.6), rnd(CFG.boundY*0.6,-CFG.boundY*0.6), z0-rnd(len));
-    return len;
-  },
-  /* two rock walls forming a channel — pure graze bait */
-  corridor(z0,d){
-    const len=1400, rows=8;
-    const gap = clamp(40-d*7, 20, 40);
-    const vertical = chance(0.5);
-    for(let i=0;i<rows;i++){
-      const z=z0-(i/rows)*len;
-      const wob=Math.sin(i*0.8)*10;
-      for(const sgn of [-1,1]){
-        const off=(gap+wob*sgn*0.35)*sgn;
-        if(vertical) astAt(off, rnd(CFG.boundY,-CFG.boundY), z, 0.3);
-        else         astAt(rnd(CFG.boundX,-CFG.boundX), off*0.62, z, 0.3);
-      }
-    }
-    for(let i=0;i<3;i++) crystalAt(vertical?rnd(8,-8):0, vertical?0:rnd(6,-6), z0-len*(0.2+i*0.28));
-    return len;
-  },
-  /* alternating half-field blocks: forces a weave */
-  slalom(z0,d){
-    const gates=4+Math.round(d), len=360*gates;
-    for(let i=0;i<gates;i++){
-      const z=z0-i*360, side=(i%2===0)?1:-1;
-      const openness = clamp(0.52-d*0.05, 0.3, 0.55);
-      const n=5;
-      for(let k=0;k<n;k++){
-        const t=k/(n-1);
-        astAt(clamp(side*(CFG.boundX*(openness+t*0.55)),-CFG.boundX,CFG.boundX),
-              rnd(CFG.boundY*0.95,-CFG.boundY*0.95), z-rnd(120), 0.22);
-      }
-      if(chance(0.6)) crystalAt(-side*CFG.boundX*0.45, rnd(20,-20), z-160);
-    }
-    return len;
-  },
-  /* solid barriers with a single gap */
-  gauntlet(z0,d){
-    const walls=2+Math.round(d*0.9), len=420*walls;
-    for(let i=0;i<walls;i++){
-      const z=z0-i*420;
-      const horiz=chance(0.5);
-      const gapSize=clamp(30-d*3.5, 17, 30);
-      if(horiz){
-        const gy=rnd(CFG.boundY*0.55,-CFG.boundY*0.55);
-        const topH=(CFG.boundY+20-(gy+gapSize))/2;
-        const botH=((gy-gapSize)+CFG.boundY+20)/2;
-        spawn('wall',0,gy+gapSize+topH,z,{hw:CFG.boundX+22,hh:Math.max(2,topH)});
-        spawn('wall',0,gy-gapSize-botH,z,{hw:CFG.boundX+22,hh:Math.max(2,botH)});
-      } else {
-        const gx=rnd(CFG.boundX*0.5,-CFG.boundX*0.5);
-        const rW=(CFG.boundX+24-(gx+gapSize))/2;
-        const lW=((gx-gapSize)+CFG.boundX+24)/2;
-        spawn('wall',gx+gapSize+rW,0,z,{hw:Math.max(2,rW),hh:CFG.boundY+20});
-        spawn('wall',gx-gapSize-lW,0,z,{hw:Math.max(2,lW),hh:CFG.boundY+20});
-      }
-      if(chance(0.45)) crystalAt(rnd(CFG.boundX*0.5,-CFG.boundX*0.5),rnd(CFG.boundY*0.5,-CFG.boundY*0.5),z-210);
-    }
-    return len;
-  },
-  /* gate chain on a sine path — thread the centres */
-  ringrun(z0,d){
-    const n=5+Math.round(d), len=280*n;
-    const amp=CFG.boundX*0.55, phase=rnd(6.28);
-    for(let i=0;i<n;i++){
-      const t=i/n, z=z0-i*280;
-      spawn('gate', Math.sin(phase+t*5.4)*amp, Math.cos(phase+t*3.9)*CFG.boundY*0.5, z, {R: clamp(22-d*1.6,14,22)});
-      if(chance(0.35)) astAt(rnd(CFG.boundX,-CFG.boundX),rnd(CFG.boundY,-CFG.boundY),z-140,0.2);
-    }
-    return len;
-  },
-  minefield(z0,d){
-    const len=1200, n=5+Math.round(d*3.5);
-    for(let i=0;i<n;i++)
-      spawn('mine', rnd(CFG.boundX*0.9,-CFG.boundX*0.9), rnd(CFG.boundY*0.9,-CFG.boundY*0.9), z0-rnd(len));
-    for(let i=0;i<3;i++) astAt(rnd(CFG.boundX,-CFG.boundX),rnd(CFG.boundY,-CFG.boundY),z0-rnd(len),0.4);
-    return len;
-  },
-  /* a ring of rock with clear air in the middle */
-  tunnel(z0,d){
-    const slices=5, len=1300;
-    for(let i=0;i<slices;i++){
-      const z=z0-(i/slices)*len, count=8;
-      const squeeze=1-i*0.055-d*0.03;
-      for(let k=0;k<count;k++){
-        const a=(k/count)*Math.PI*2 + i*0.35;
-        astAt(Math.cos(a)*CFG.boundX*squeeze, Math.sin(a)*CFG.boundY*squeeze, z, 0.25);
-      }
-    }
-    for(let i=0;i<4;i++) crystalAt(rnd(9,-9), rnd(9,-9), z0-len*(0.15+i*0.22));
-    return len;
-  },
-  /* an X of debris: four open quadrants */
-  cross(z0,d){
-    const len=900, arms=9;
-    for(let k=0;k<arms;k++){
-      const t=(k/(arms-1))*2-1;
-      astAt(t*CFG.boundX*0.95, t*CFG.boundY*0.95, z0-rnd(len*0.35,len*0.15), 0.25);
-      astAt(t*CFG.boundX*0.95, -t*CFG.boundY*0.95, z0-rnd(len*0.85,len*0.6), 0.25);
-    }
-    if(chance(0.7)) crystalAt(0,0,z0-len*0.5);
-    return len;
-  },
-  treasure(z0,d){
-    const len=900, n=7;
-    const phase=rnd(6.28);
-    for(let i=0;i<n;i++){
-      const t=i/(n-1);
-      crystalAt(Math.sin(phase+t*4.2)*CFG.boundX*0.6, Math.cos(phase+t*3.1)*CFG.boundY*0.6, z0-t*len);
-    }
-    spawn('pickup', rnd(CFG.boundX*0.4,-CFG.boundX*0.4), rnd(CFG.boundY*0.4,-CFG.boundY*0.4), z0-len*0.55,
-          {kind: chance(0.62)?'shield':'repair'});
-    const guards=Math.round(2+d*2);
-    for(let i=0;i<guards;i++)
-      (chance(0.4)?spawn('mine',rnd(CFG.boundX*0.8,-CFG.boundX*0.8),rnd(CFG.boundY*0.8,-CFG.boundY*0.8),z0-rnd(len))
-                 :astAt(rnd(CFG.boundX,-CFG.boundX),rnd(CFG.boundY,-CFG.boundY),z0-rnd(len),0.5));
-    return len;
-  },
-  /* tight V of small rocks — shoot through it or thread it */
-  swarm(z0,d){
-    const len=1000, n=11+Math.round(d*4);
-    const cx=rnd(CFG.boundX*0.5,-CFG.boundX*0.5), cy=rnd(CFG.boundY*0.5,-CFG.boundY*0.5);
-    for(let i=0;i<n;i++){
-      const t=(i/n)*2-1;
-      astAt(clamp(cx+t*46,-CFG.boundX,CFG.boundX), clamp(cy+Math.abs(t)*32-16,-CFG.boundY,CFG.boundY),
-            z0-Math.abs(t)*len*0.6-rnd(120), 0.06);
-    }
-    return len;
-  },
-  /* two giants converging — the gap closes as you approach */
-  pincer(z0,d){
-    const len=1000, steps=5;
-    for(let i=0;i<steps;i++){
-      const t=i/(steps-1), z=z0-t*len;
-      const gap=lerp(CFG.boundX*0.95, clamp(26-d*3,15,26), t);
-      spawn('ast', -gap, rnd(14,-14), z, {r:rnd(13,9), size:1});
-      spawn('ast',  gap, rnd(14,-14), z, {r:rnd(13,9), size:1});
-    }
-    crystalAt(0,0,z0-len*0.8);
-    return len;
-  },
-  /* slowly turning rock pairs — time the gap as it sweeps */
-  tumblers(z0,d){
-    const n=3+Math.round(d*1.2), len=300*n+400;
-    for(let i=0;i<n;i++){
-      spawn('tumbler', rnd(CFG.boundX*0.55,-CFG.boundX*0.55), rnd(CFG.boundY*0.5,-CFG.boundY*0.5),
-            z0-i*340-rnd(90), {cr:rnd(9,6.5), sep:clamp(rnd(30,20)-d*1.5,14,30), spin:rnd(1.6,0.6)*(chance(0.5)?1:-1)});
-      if(chance(0.4)) astAt(rnd(CFG.boundX,-CFG.boundX),rnd(CFG.boundY,-CFG.boundY),z0-i*340-rnd(200),0.2);
-    }
-    return len;
-  },
-  /* a thicket of stone splinters turning like clock hands */
-  spires(z0,d){
-    const n=6+Math.round(d*2), len=1300;
-    for(let i=0;i<n;i++){
-      spawn('spire', rnd(CFG.boundX*0.7,-CFG.boundX*0.7), rnd(CFG.boundY*0.7,-CFG.boundY*0.7),
-            z0-(i/n)*len-rnd(120),
-            {halfLen:rnd(34,20), th:rnd(5,3.2), ang:rnd(3.14)});
-    }
-    for(let i=0;i<2;i++) crystalAt(rnd(CFG.boundX*0.5,-CFG.boundX*0.5),rnd(CFG.boundY*0.5,-CFG.boundY*0.5),z0-rnd(len));
-    return len;
-  },
-  /* ice bodies cutting across the lane */
-  comets(z0,d){
-    const n=3+Math.round(d), len=1200;
-    for(let i=0;i<n;i++)
-      spawn('comet', rnd(CFG.boundX*0.8,-CFG.boundX*0.8), rnd(CFG.boundY*0.8,-CFG.boundY*0.8),
-            z0-(i/n)*len-rnd(150), {r:rnd(7,4.5), cross:rnd(52,30)});
-    for(let i=0;i<4;i++) astAt(rnd(CFG.boundX,-CFG.boundX),rnd(CFG.boundY,-CFG.boundY),z0-rnd(len),0.3);
-    return len;
-  },
-  /* dust banks that hide what is inside them */
-  duststorm(z0,d){
-    const n=2+Math.round(d*0.8), len=1500;
-    for(let i=0;i<n;i++){
-      const cx=rnd(CFG.boundX*0.5,-CFG.boundX*0.5), cy=rnd(CFG.boundY*0.5,-CFG.boundY*0.5);
-      const cz=z0-(i/n)*len-rnd(200);
-      spawn('cloud', cx, cy, cz, {r:rnd(56,40), depth:rnd(320,220)});
-      for(let k=0;k<4+Math.round(d*2);k++)
-        astAt(cx+rnd(46,-46), cy+rnd(40,-40), cz+rnd(240,-240), 0.35);
-    }
-    return len;
-  },
-  /* brittle rock: shoot it and you make three more */
-  brittle(z0,d){
-    const n=4+Math.round(d*1.5), len=1100;
-    for(let i=0;i<n;i++)
-      spawn('splitter', rnd(CFG.boundX*0.85,-CFG.boundX*0.85), rnd(CFG.boundY*0.85,-CFG.boundY*0.85),
-            z0-(i/n)*len-rnd(140), {r:rnd(12,8.5)});
-    for(let i=0;i<3;i++) astAt(rnd(CFG.boundX,-CFG.boundX),rnd(CFG.boundY,-CFG.boundY),z0-rnd(len),0.2);
-    return len;
-  },
-  flarewall(z0,d){
-    const len=900;
-    for(let i=0;i<2;i++){
-      spawn('flare',0,0,z0-i*520,{
-        holeX: rnd(CFG.boundX*0.62,-CFG.boundX*0.62),
-        holeY: rnd(CFG.boundY*0.62,-CFG.boundY*0.62),
-        holeR: clamp(30-d*3.5,18,30)
-      });
-    }
-    for(let i=0;i<3;i++) astAt(rnd(CFG.boundX,-CFG.boundX),rnd(CFG.boundY,-CFG.boundY),z0-rnd(len),0.2);
-    return len;
-  }
-};
+/* ============================================================ FORMATIONS
+   Every formation is built around a LANE: a curve through the corridor that
+   is flyable by construction. Rock is then placed at a measured clearance
+   from that lane, so a formation always has a route, and the route always
+   runs close enough to bank grazes. The fastest line is the tightest line.
+   ==================================================================== */
 
-function weightedPattern(){
-  const w = State.mod.w, keys=Object.keys(w);
-  let total=0; for(const k of keys) total+=w[k];
-  let r=Math.random()*total;
-  for(const k of keys){ r-=w[k]; if(r<=0) return k; }
-  return 'field';
+const LANE_MARGIN_X = CFG.boundX*0.80, LANE_MARGIN_Y = CFG.boundY*0.76;
+/* A lane may not demand more lateral speed than the ship can produce.
+   Terminal lateral speed is ~200u/s; at speed the world moves ~830u/s, so
+   cap the slope well under that ratio. */
+const MAX_SLOPE = 0.030;
+
+function newLane(kind, len){
+  const ax = Math.min(LANE_MARGIN_X, MAX_SLOPE*len);
+  const ay = Math.min(LANE_MARGIN_Y, MAX_SLOPE*len*0.66);
+  const p1=rnd(6.28), p2=rnd(6.28), s=chance(0.5)?1:-1;
+  const x0=rnd(LANE_MARGIN_X*0.45,-LANE_MARGIN_X*0.45);
+  const y0=rnd(LANE_MARGIN_Y*0.45,-LANE_MARGIN_Y*0.45);
+  let f;
+  switch(kind){
+    case 'straight': f = t=>({x:x0, y:y0}); break;
+    case 'drift':    f = t=>({x:x0+s*ax*0.5*t, y:y0-s*ay*0.5*t}); break;
+    case 'sine':     f = t=>({x:Math.sin(p1+t*Math.PI*1.9*s)*ax,
+                              y:Math.sin(p2+t*Math.PI*1.2)*ay*0.55}); break;
+    case 'helix':    f = t=>({x:Math.cos(p1+t*Math.PI*1.8*s)*ax,
+                              y:Math.sin(p1+t*Math.PI*1.8*s)*ay}); break;
+    case 'zigzag':   f = t=>{ const u=(t*1.8+p1*0.15)%2, tri=u<1?(u*2-1):(3-u*2);
+                              return {x:tri*ax*s, y:Math.sin(p2+t*3)*ay*0.35}; }; break;
+    case 'climb':    f = t=>({x:Math.sin(p1+t*2.4)*ax*0.55, y:(t*1.7-0.85)*ay*s}); break;
+    default:         f = t=>({x:x0, y:y0});
+  }
+  return t=>{
+    const p=f(clamp(t,0,1));
+    return { x:clamp(p.x,-LANE_MARGIN_X,LANE_MARGIN_X),
+             y:clamp(p.y,-LANE_MARGIN_Y,LANE_MARGIN_Y) };
+  };
 }
 
-let lastPattern='';
+/* unit vector across the lane, so flanking rock reads as a wall beside it */
+function laneNormal(lane, t){
+  const e=0.01;
+  const a=lane(Math.max(0,t-e)), b=lane(Math.min(1,t+e));
+  const dx=b.x-a.x, dy=b.y-a.y, m=Math.hypot(dx,dy);
+  if(m<0.35) return {x:0,y:1};            // near-straight: stack flanks vertically
+  return {x:-dy/m, y:dx/m};
+}
+
+/* Distance from the lane to a rock CENTRE, in units of the graze band.
+      hit    when dist < rockR + shipR
+      graze  when dist < rockR + grazeBand
+   so dist = rockR + shipR + grazeBand*k grazes only while
+      k < 1 - shipR/grazeBand  (~0.74 here).
+   k around 0.55 leaves the ship ~7 units of error either way and still
+   banks the graze: that is what makes the ideal line the tight line.
+   k above 0.75 is deliberate breathing room, not a mistake. */
+const GRAZE_K = 1 - CFG.shipR/CFG.grazeBand;
+function clearance(rockR, d, tight){
+  const k = clamp((tight===undefined?GRAZE_K*0.81:tight) - d*0.06 - (State.mod.tight||0), 0.46, 1.40);
+  return rockR + CFG.shipR + CFG.grazeBand*k;
+}
+
+/* Pick the rock BEFORE the clearance, so the gap is sized to the rock that
+   actually spawns rather than an assumed one. Material comes from the
+   sector modifier, not from the formation. */
+function pickRock(bigP){
+  const mix=State.mod.mix||{};
+  const r=Math.random();
+  let acc=mix.volatile||0;
+  if(r<acc) return {type:'mine', rr:4.0};
+  acc+=mix.brittle||0;
+  if(r<acc){ const raw=rnd(11.5,8); return {type:'splitter', raw, rr:raw*0.86}; }
+  const big=chance(bigP===undefined?0.18:bigP);
+  const raw=big?rnd(11,7.5):rnd(6.4,3.4);
+  return {type:'ast', raw, big, rr:raw*0.86};
+}
+function placeRock(spec,x,y,z){
+  if(Math.abs(x)>CFG.boundX+26 || Math.abs(y)>CFG.boundY+26) return null;
+  if(spec.type==='mine')     return spawn('mine',x,y,z,{});
+  if(spec.type==='splitter') return spawn('splitter',x,y,z,{r:spec.raw});
+  return spawn('ast',x,y,z,{r:spec.raw, size:spec.big?1:0});
+}
+function laneRock(x,y,z,bigP){ return placeRock(pickRock(bigP), x,y,z); }
+
+/* Map a world z back onto the lane parameter. Every placement must go
+   through this: measuring clearance at one t while spawning at another z
+   is how a formation ends up sealing its own lane. */
+function tAt(z0, len, z){ return clamp((z0-z)/len, 0, 1); }
+
+/* stack rock outward from the lane on one or both sides */
+function flank(lane, z0, len, z, d, opt={}){
+  const t=tAt(z0,len,z);
+  const p=lane(t), n=laneNormal(lane,t);
+  const sides = opt.side ? [opt.side] : [-1,1];
+  const depth = opt.depth||2;
+  for(const side of sides){
+    let off=0;
+    for(let k=0;k<depth;k++){
+      const spec=pickRock(opt.bigP);
+      // first rock sits at graze clearance; the rest stack outward behind it
+      off = k===0 ? clearance(spec.rr, d, opt.tight) : off + spec.rr*2.1;
+      placeRock(spec, p.x+n.x*off*side, p.y+n.y*off*side, z);
+    }
+  }
+}
+
+/* seal everything except an aperture on the lane, using rock ridges */
+function curtain(lane, t, z, d, ah, av){
+  const p=lane(t);
+  const B=CFG.boundX+24, H=CFG.boundY+22;
+  const lw=(p.x-ah)+B, rw=B-(p.x+ah);
+  if(lw>4) spawn('wall', (p.x-ah+ -B)/2, 0, z, {hw:lw/2, hh:H});
+  if(rw>4) spawn('wall', (p.x+ah+  B)/2, 0, z, {hw:rw/2, hh:H});
+  const th=H-(p.y+av), bh=(p.y-av)+H;
+  if(th>4) spawn('wall', p.x, (p.y+av+H)/2, z, {hw:ah, hh:th/2});
+  if(bh>4) spawn('wall', p.x, (p.y-av-H)/2, z, {hw:ah, hh:bh/2});
+}
+
+const FORMS = {
+  /* ---- 1. CANYON: winding rock walls. The flagship graze formation. ---- */
+  canyon:{ intensity:3, fn(z0,d){
+    const len=1500, lane=newLane(chance(0.5)?'sine':'helix', len);
+    const rows=Math.round(13*(State.mod.density||1));
+    for(let i=0;i<rows;i++){
+      const t=i/(rows-1), z=z0-t*len;
+      flank(lane, z0, len, z, d, {depth:2, tight:0.58, bigP:0.14});
+    }
+    for(let i=0;i<4;i++){ const t=0.15+i*0.24, p=lane(t); crystalAt(p.x,p.y,z0-t*len); }
+    return {len, lane};
+  }},
+
+  /* ---- 2. CHICANE: hard alternating turns, blocked on the inside ---- */
+  chicane:{ intensity:3, fn(z0,d){
+    const len=1500, lane=newLane('zigzag', len);
+    const beats=5;
+    for(let i=0;i<beats;i++){
+      const t=(i+0.5)/beats, z=z0-t*len;
+      // heavy wall on the outside of the turn, light kerb on the inside.
+      // each rock is measured at its own z, not the beat's.
+      let off=0;
+      for(let k=0;k<4;k++){
+        const rz=z-rnd(70), rt=tAt(z0,len,rz);
+        const q=lane(rt), n=laneNormal(lane,rt), spec=pickRock(0.22);
+        off = k===0 ? clearance(spec.rr, d, 0.56) : off + spec.rr*2.1;
+        placeRock(spec, q.x+n.x*off, q.y+n.y*off, rz);
+      }
+      let ioff=0;
+      for(let k=0;k<2;k++){
+        const rz=z-rnd(70), rt=tAt(z0,len,rz);
+        const q=lane(rt), n=laneNormal(lane,rt), spec=pickRock(0.10);
+        ioff = k===0 ? clearance(spec.rr, d, 0.66) : ioff + spec.rr*2.1;
+        placeRock(spec, q.x-n.x*ioff, q.y-n.y*ioff, rz);
+      }
+    }
+    for(let i=0;i<3;i++){ const t=(i+1)/4, p=lane(t); crystalAt(p.x,p.y,z0-t*len); }
+    return {len, lane};
+  }},
+
+  /* ---- 3. NEEDLE: long, straight, brutally tight. Graze farm. ---- */
+  needle:{ intensity:3, fn(z0,d){
+    const len=1250, lane=newLane('drift', len);
+    const rows=16;
+    for(let i=0;i<rows;i++){
+      const t=i/(rows-1), z=z0-t*len;
+      flank(lane, z0, len, z, d, {depth:2, tight:0.50, bigP:0.03});
+    }
+    for(let i=0;i<5;i++){ const t=i/4, p=lane(t); crystalAt(p.x,p.y,z0-t*len); }
+    return {len, lane};
+  }},
+
+  /* ---- 4. BOTTLENECK: open, crunch, open. Gives the sector a pulse. ---- */
+  bottleneck:{ intensity:2, fn(z0,d){
+    const len=1400, lane=newLane('sine', len);
+    const gates=3;
+    for(let g=0;g<gates;g++){
+      const t=(g+0.5)/gates, z=z0-t*len;
+      const p=lane(t), rr=5.4, c=clearance(rr,d,0.72);
+      const ring=9;
+      for(let k=0;k<ring;k++){
+        const a=(k/ring)*Math.PI*2+rnd(0.3);
+        laneRock(p.x+Math.cos(a)*c*1.35, p.y+Math.sin(a)*c, z, 0.20);
+      }
+      crystalAt(p.x,p.y,z-90);
+    }
+    return {len, lane};
+  }},
+
+  /* ---- 5. CURTAIN: sealed ridges, one aperture, apertures move ---- */
+  curtains:{ intensity:3, fn(z0,d){
+    const len=1500, lane=newLane(chance(0.5)?'zigzag':'sine', len);
+    const n=3;
+    for(let i=0;i<n;i++){
+      const t=(i+0.5)/n, z=z0-t*len;
+      curtain(lane, t, z, d, clamp(20-d*2.6,13,20), clamp(16.5-d*2.2,11,16.5));
+      const p=lane(t);
+      crystalAt(p.x,p.y,z-120);
+    }
+    return {len, lane};
+  }},
+
+  /* ---- 6. THREADER: stone arches strung along the lane ---- */
+  threader:{ intensity:2, fn(z0,d){
+    const len=1600, lane=newLane('helix', len);
+    const n=5+Math.round(d);
+    for(let i=0;i<n;i++){
+      const t=(i+0.5)/n, z=z0-t*len, p=lane(t);
+      spawn('gate', p.x, p.y, z, {R: clamp(22-d*1.5,14,22)});
+      if(chance(0.6)) flank(lane, z0, len, z-150, d, {depth:1, tight:1.05, bigP:0.2});
+    }
+    return {len, lane};
+  }},
+
+  /* ---- 7. COLLAPSE: the walls close as you run it ---- */
+  collapse:{ intensity:3, fn(z0,d){
+    const len=1300, lane=newLane('drift', len);
+    const rows=12;
+    for(let i=0;i<rows;i++){
+      const t=i/(rows-1), z=z0-t*len;
+      const tight = lerp(1.10, 0.47, t);
+      flank(lane, z0, len, z, d, {depth:2, tight, bigP:0.3});
+    }
+    const pe=lane(1); crystalAt(pe.x,pe.y,z0-len-70);
+    return {len, lane};
+  }},
+
+  /* ---- 8. SHOAL: a drifting school with one channel cut through it ---- */
+  shoal:{ intensity:2, fn(z0,d){
+    const len=1200, lane=newLane('drift', len);
+    const n=Math.round(30*(State.mod.density||1));
+    const drift=rnd(16,-16), driftY=rnd(10,-10);
+    for(let i=0;i<n;i++){
+      const t=Math.random(), z=z0-t*len, p=lane(t);
+      let x=rnd(CFG.boundX*0.95,-CFG.boundX*0.95), y=rnd(CFG.boundY*0.95,-CFG.boundY*0.95);
+      const n2=laneNormal(lane,t);
+      void z;
+      // push anything sitting on the lane out to the channel edge
+      const off=(x-p.x)*n2.x+(y-p.y)*n2.y;
+      const c=clearance(4.2,d,0.56);
+      // anything near the channel is packed onto its edge, so the cut reads
+      // as two walls you can shave rather than a vague thinning
+      if(Math.abs(off)<c*2.3){
+        const push=(off>=0?1:-1)*c-off;
+        x+=n2.x*push; y+=n2.y*push;
+      }
+      const e=spawn('ast', x, y, z, {r:rnd(5,2.8), size:0});
+      if(e){ e.vx=drift; e.vy=driftY; }
+    }
+    for(let i=0;i<3;i++){ const t=(i+1)/4, p=lane(t); crystalAt(p.x,p.y,z0-t*len); }
+    return {len, lane};
+  }},
+
+  /* ---- 9. ORBIT GATE: turning pairs, gap pre-aligned to the lane ---- */
+  orbitgate:{ intensity:2, fn(z0,d){
+    const len=1400, lane=newLane('sine', len);
+    const n=3+Math.round(d*0.8);
+    for(let i=0;i<n;i++){
+      const t=(i+0.5)/n, z=z0-t*len, p=lane(t);
+      const nm=laneNormal(lane,t);
+      const cr=rnd(9,6.5);
+      const e=spawn('tumbler', p.x, p.y, z,
+        {cr, sep:clamp(cr+CFG.shipR+rnd(20,12)-d*1.2, cr+CFG.shipR+9, 34),
+         spin:rnd(0.9,0.35)*(chance(0.5)?1:-1)});
+      // start the pair broadside to the lane so the gap faces you on arrival
+      if(e){ e.ang=Math.atan2(nm.y,nm.x); e.mesh.rotation.z=e.ang; }
+      if(chance(0.5)) flank(lane, z0, len, z-180, d, {depth:1, tight:1.05, bigP:0.15});
+    }
+    return {len, lane};
+  }},
+
+  /* ---- 10. SPLINTER RUN: shards laid along the walls, lane between ---- */
+  splinters:{ intensity:3, fn(z0,d){
+    const len=1400, lane=newLane('sine', len);
+    const n=9+Math.round(d*2);
+    for(let i=0;i<n;i++){
+      const t=(i+0.5)/n, z=z0-t*len, p=lane(t), nm=laneNormal(lane,t);
+      for(const side of [-1,1]){
+        if(chance(0.22)) continue;               // leave the odd bay open
+        const half=rnd(30,18), th=rnd(4.6,3.0);
+        // it lies ALONG the wall, so only its thickness faces the lane
+        const c=clearance(th, d, 0.58);
+        const ang=Math.atan2(-nm.x, nm.y);
+        spawn('spire', p.x+nm.x*c*side, p.y+nm.y*c*side, z,
+              {halfLen:half, th, ang});
+      }
+    }
+    for(let i=0;i<3;i++){ const t=(i+1)/4, p=lane(t); crystalAt(p.x,p.y,z0-t*len); }
+    return {len, lane};
+  }},
+
+  /* ---- 11. CLIMB: the lane crosses the whole corridor vertically ---- */
+  climb:{ intensity:2, fn(z0,d){
+    const len=1400, lane=newLane('climb', len);
+    const rows=11;
+    for(let i=0;i<rows;i++){
+      const t=i/(rows-1), z=z0-t*len;
+      flank(lane, z0, len, z, d, {depth:3, tight:0.62, bigP:0.22});
+    }
+    for(let i=0;i<3;i++){ const t=0.2+i*0.3, p=lane(t); crystalAt(p.x,p.y,z0-t*len); }
+    return {len, lane};
+  }},
+
+  /* ---- 12. BREATHER: recovery beat, salvage, a little loose rock ---- */
+  breather:{ intensity:1, fn(z0,d){
+    const len=850, lane=newLane('drift', len);
+    for(let i=0;i<6;i++){ const t=i/5, p=lane(t); crystalAt(p.x,p.y,z0-t*len); }
+    if(chance(0.75)){
+      const t=rnd(0.8,0.2), p=lane(t);
+      spawn('pickup', p.x, p.y, z0-t*len, {kind: chance(0.6)?'shield':'repair'});
+    }
+    const n=Math.round(5*(State.mod.density||1));
+    for(let i=0;i<n;i++){
+      const t=Math.random(), p=lane(t), nm=laneNormal(lane,t);
+      const off=(clearance(5,d,1.35)+rnd(30))*(chance(0.5)?1:-1);
+      laneRock(p.x+nm.x*off, p.y+nm.y*off, z0-t*len, 0.25);
+    }
+    return {len, lane};
+  }},
+
+  /* ---- 13. FLARE WALL: plasma sheets, one gap, on the lane ---- */
+  flarewall:{ intensity:2, fn(z0,d){
+    const len=1000, lane=newLane('sine', len);
+    for(let i=0;i<2;i++){
+      const t=(i+0.5)/2, z=z0-t*len, p=lane(t);
+      spawn('flare',0,0,z,{holeX:p.x, holeY:p.y, holeR:clamp(30-d*3.0,20,30)});
+    }
+    for(let i=0;i<3;i++){
+      const t=Math.random(), p=lane(t), nm=laneNormal(lane,t);
+      const off=(clearance(5,d,1.1)+rnd(24))*(chance(0.5)?1:-1);
+      laneRock(p.x+nm.x*off, p.y+nm.y*off, z0-t*len, 0.2);
+    }
+    return {len, lane};
+  }},
+};
+
+/* Modifier overlays: drift extra hazard across a finished formation.
+   Clouds sit ON the lane, so the sector that blinds you does it where it hurts. */
+/* Offset from the lane that stays inside the corridor. Clamping a
+   deliberately-distant object is what drags it back onto the lane, so pick
+   the side that fits and skip when neither does. */
+function offLane(p, nm, dist){
+  for(const side of (chance(0.5)?[1,-1]:[-1,1])){
+    const x=p.x+nm.x*dist*side, y=p.y+nm.y*dist*side;
+    if(Math.abs(x)<=CFG.boundX && Math.abs(y)<=CFG.boundY) return {x,y};
+  }
+  return null;
+}
+
+function decorate(z0, len, lane, d){
+  const m=State.mod;
+  if(m.comets){
+    const n=2+Math.round(d);
+    for(let i=0;i<n;i++){
+      const t=Math.random(), p=lane(t), nm=laneNormal(lane,t);
+      const q=offLane(p, nm, clearance(6,d,1.7)+rnd(40));
+      if(q) spawn('comet', q.x, q.y, z0-t*len, {r:rnd(7,4.5), cross:rnd(48,26)});
+    }
+  }
+  if(m.clouds){
+    const n=1+(chance(0.5)?1:0);
+    for(let i=0;i<n;i++){
+      const t=rnd(0.85,0.15), p=lane(t);
+      spawn('cloud', p.x, p.y, z0-t*len, {r:rnd(54,40), depth:rnd(300,200)});
+    }
+  }
+  if(m.spires && chance(0.6)){
+    const t=Math.random(), p=lane(t), nm=laneNormal(lane,t);
+    const half=rnd(30,18), th=rnd(4.4,3);
+    const q=offLane(p, nm, clearance(th,d,1.0));
+    if(q) spawn('spire', q.x, q.y, z0-t*len,
+                {halfLen:half, th, ang:Math.atan2(-nm.x, nm.y)});
+  }
+  if(m.rich){
+    for(let i=0;i<3;i++){
+      const t=Math.random(), p=lane(t);
+      crystalAt(p.x, p.y, z0-t*len);
+    }
+  }
+}
+
+const FORM_KEYS = Object.keys(FORMS);
+function pickForm(d, lastKey, lastIntensity){
+  const corona = State.dist/State.target > 0.86;
+  if(corona) return State.mod.flares!==false && chance(0.5) ? 'flarewall' : 'breather';
+  const pool=[];
+  for(const k of FORM_KEYS){
+    const f=FORMS[k];
+    if(k==='flarewall' && !State.mod.flares) continue;
+    if(k===lastKey) continue;
+    // after a hard set, only easy ones are eligible: the sector needs to breathe
+    if(lastIntensity>=3 && f.intensity>=3) continue;
+    if(k==='splinters' && !State.mod.spires && !chance(0.35)) continue;
+    let w = f.intensity===1 ? 1.0 : 1.6;
+    if(State.sector<2 && f.intensity>=3) w*=0.45;   // ease the player in
+    pool.push({k, w});
+  }
+  if(!pool.length) return 'breather';
+  let total=0; for(const o of pool) total+=o.w;
+  let r=Math.random()*total;
+  for(const o of pool){ r-=o.w; if(r<=0) return o.k; }
+  return pool[0].k;
+}
+
+let lastPattern='', lastIntensity=0;
 function runSpawner(){
   const d=diffOf();
   while(State.dist + CFG.spawnAhead >= spawnCursor){
     // never spawn a partial encounter: if the corridor is already packed,
-    // insert breathing room instead of a half-drawn pattern
-    if(freeCount('ast') < 46 || freeCount('pickup') < 8){ spawnCursor += 520; continue; }
-    const z = -(spawnCursor - State.dist);
-    let key;
-    if(State.dist/State.target > 0.86){
-      // corona run: only flares and loose rock this close to the star
-      key = State.mod.flares!==false && chance(0.55) ? 'flarewall' : 'field';
-    } else {
-      let guard=0;
-      do { key=weightedPattern(); guard++; } while(key===lastPattern && guard<4);
+    // insert breathing room instead of a half-drawn formation
+    if(freeCount('ast') < 46 || freeCount('pickup') < 10 || freeCount('wall') < 5){
+      spawnCursor += 520; continue;
     }
-    lastPattern=key;
-    const len = PATTERNS[key](z, d);
-    const gap = clamp(660 - State.sector*22, 300, 660) * rnd(1.2,0.8);
-    spawnCursor += len + gap;
+    const z = -(spawnCursor - State.dist);
+    const key = pickForm(d, lastPattern, lastIntensity);
+    const form = FORMS[key];
+    const built = form.fn(z, d);
+    decorate(z, built.len, built.lane, d);
+    lastPattern=key; lastIntensity=form.intensity;
+    // harder sets earn a longer rest behind them
+    const rest = (form.intensity>=3 ? 780 : form.intensity===2 ? 560 : 380);
+    const gap = clamp(rest - State.sector*16, 260, 900) * rnd(1.15,0.85);
+    spawnCursor += built.len + gap;
   }
 }
 
