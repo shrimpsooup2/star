@@ -78,7 +78,7 @@ canvas#gl{display:block;position:fixed;inset:0;width:100%;height:100%;}
   text-anchor:middle;fill:#ff2fa8;opacity:0}
 #brk-ready.on{opacity:1;animation:pulse .55s linear infinite}
 
-.corner{position:absolute;}
+.corner{position:absolute;z-index:2}
 .tr{top:var(--pt);right:var(--pr);text-align:right}
 .bl{bottom:var(--pb);left:var(--pl)}
 .label{font-size:10px;letter-spacing:.22em;font-weight:700;opacity:.7;margin-bottom:1px}
@@ -98,6 +98,29 @@ canvas#gl{display:block;position:fixed;inset:0;width:100%;height:100%;}
   will-change:transform;transition:opacity .2s}
 #fpv-frame{position:fixed;inset:0;width:100%;height:100%;display:none;pointer-events:none}
 #fpv-frame.on{display:block}
+/* canopy glass: a faint tint plus a raking sheen, so the ring below reads as
+   projected onto it rather than pasted over the screen */
+#glass{position:fixed;inset:0;display:none;pointer-events:none;z-index:7;
+  background:
+    linear-gradient(158deg, rgba(180,255,245,.055) 0%, rgba(180,255,245,0) 26%,
+                    rgba(0,0,0,0) 62%, rgba(120,220,255,.045) 88%, rgba(120,220,255,0) 100%),
+    radial-gradient(ellipse 90% 70% at 50% 44%, rgba(40,255,220,.030) 0%, rgba(0,0,0,0) 70%);}
+#glass.on{display:block}
+#hud.fpv #cockpit{filter:drop-shadow(0 0 7px rgba(34,255,221,.35))}
+#hud.fpv .arc,#hud.fpv .arc-thin{opacity:.92}
+#hud.fpv .corner{text-shadow:0 0 10px rgba(34,255,221,.45)}
+/* the corridor's invisible wall, drawn: hazard stripes that rise as you close
+   on the edge and go red the moment you are pinned against it */
+#bounds{position:fixed;inset:0;pointer-events:none;z-index:0}
+.bwall{position:absolute;opacity:0;transition:opacity .1s linear;
+  background-image:repeating-linear-gradient(var(--ang,45deg),
+    var(--c,#ffc233) 0 9px, rgba(0,0,0,0) 9px 20px);
+  -webkit-mask-image:linear-gradient(var(--fade,to right), #000, transparent);
+  mask-image:linear-gradient(var(--fade,to right), #000, transparent)}
+#bw-l{left:0;top:0;bottom:0;width:9vw;--fade:to right}
+#bw-r{right:0;top:0;bottom:0;width:9vw;--fade:to left}
+#bw-t{top:0;left:0;right:0;height:9vh;--ang:135deg;--fade:to bottom}
+#bw-b{bottom:0;left:0;right:0;height:9vh;--ang:135deg;--fade:to top}
 #popups{position:fixed;inset:0;overflow:hidden}
 .pop{position:absolute;font-size:15px;font-weight:900;letter-spacing:.05em;white-space:nowrap;
   transform:translate(-50%,-50%);text-shadow:0 2px 8px #000;will-change:transform,opacity}
@@ -348,6 +371,7 @@ button:active{transform:scale(.96)}
     <div id="combo-line"></div>
   </div>
 
+  <div id="glass"></div>
   <svg id="fpv-frame" viewBox="0 0 100 100" preserveAspectRatio="none">
     <path d="M0 0 L26 0 L0 17 Z"      fill="rgba(10,26,30,.55)"/>
     <path d="M100 0 L74 0 L100 17 Z"  fill="rgba(10,26,30,.55)"/>
@@ -356,6 +380,10 @@ button:active{transform:scale(.96)}
     <path d="M0 17 L26 0 M100 17 L74 0 M0 86 L22 100 M100 86 L78 100"
           stroke="rgba(34,255,221,.34)" stroke-width=".5" fill="none" vector-effect="non-scaling-stroke"/>
   </svg>
+  <div id="bounds">
+    <div class="bwall" id="bw-l"></div><div class="bwall" id="bw-r"></div>
+    <div class="bwall" id="bw-t"></div><div class="bwall" id="bw-b"></div>
+  </div>
   <div id="popups"></div>
   <div id="gear-flash"></div>
 </div>
@@ -896,11 +924,12 @@ if(isTouch){
 /* ================================================================ RENDERER */
 let renderer, scene, camera, starLight, ambient, rimLight, skyLight, keyLight;
 let rimColor = new THREE.Color(0x9fd8ff);   // silhouette halo, tinted by the sector star
-let ship, hullGroup=null, shipGlow=[], shieldMesh, engineCones=[], noseLight=null;
+let ship, hullGroup=null, cockpitGroup=null, cockpitStrips=[], shipGlow=[], shieldMesh, engineCones=[], noseLight=null;
 let starGroup, starCore, starCorona, starHalo, starUniforms, starProms=[], starFlare=null, starRays=[];
 let nebula, dust, conduitRings=[], streaks, streakGeo;
 const Cam = { shake:0, roll:0, kick:0, fovBase:72 };
 const camLook = { x:0, y:0 };
+const FPV_EYE_Y = 1.15, FPV_EYE_Z = -2.2;   // pilot's eye, in ship-local space
 
 const starProps = { radius:2600, rotAxis:new THREE.Vector3(0,1,0), rotSpeed:0.002, flareSpeed:0.02, flareAmp:0.12, hue:0.08, lightBase:2.4 };
 
@@ -1265,11 +1294,74 @@ function buildShip(){
       fog:false, side:THREE.DoubleSide}));
   shieldMesh.visible=false; ship.add(shieldMesh);
 
+  buildCockpit();
+
   chargeGlow=new THREE.Sprite(new THREE.SpriteMaterial({map:glowTexture(),color:0x6fd0ff,
     transparent:true,opacity:0,blending:THREE.AdditiveBlending,depthWrite:false,fog:false}));
   chargeGlow.position.set(0,0,-9.5); chargeGlow.visible=false; ship.add(chargeGlow);
 
   scene.add(ship);
+}
+
+/* Cockpit interior. Sized to frame the view from the pilot's eye (which sits
+   at ship-local 0,1.15,-2.2), not to the hull's real proportions - you never
+   see the outside of it. DoubleSide so interior faces render from within. */
+function cockpitPart(geo, color, wire, emissive){
+  const m=new THREE.Mesh(geo, new THREE.MeshPhongMaterial({
+    color, emissive:emissive===undefined?0x081418:emissive,
+    flatShading:true, shininess:24, side:THREE.DoubleSide }));
+  m.add(new THREE.LineSegments(edgesFor(geo),
+    new THREE.LineBasicMaterial({color:wire||0x22ffdd, transparent:true, opacity:0.7})));
+  return m;
+}
+function buildCockpit(){
+  cockpitGroup = new THREE.Group();
+  // Everything is laid out relative to the pilot's EYE, not the ship origin,
+  // and sized from the actual FOV so the frame lands on the edges of the view
+  // instead of somewhere off screen.
+  cockpitGroup.position.set(0, FPV_EYE_Y, FPV_EYE_Z);   // origin AT the eye
+
+  const t = Math.tan(CFG.fpvFov*0.5*Math.PI/180);
+  const FZ = 3.4, DZ = 2.0;                 // frame / dashboard depth ahead of the eye
+  const fH = t*FZ,  fW = fH*1.78;           // half-extents visible at that depth (16:9)
+  const dH = t*DZ,  dW = dH*1.78;
+  const H = fH*0.80, W = fW*0.86;           // window opening, just inside the view
+  const frame=0x161d26, wire=0x2fd8c4;
+
+  const top=cockpitPart(new THREE.BoxGeometry(W*2+0.9, 0.42, 0.55), frame, wire);
+  top.position.set(0, H+0.21, -FZ); cockpitGroup.add(top);
+  const bot=cockpitPart(new THREE.BoxGeometry(W*2+0.9, 0.5, 0.55), frame, wire);
+  bot.position.set(0, -H-0.25, -FZ); cockpitGroup.add(bot);
+  [-1,1].forEach(sx=>{
+    const p=cockpitPart(new THREE.BoxGeometry(0.44, H*2+0.5, 0.55), frame, wire);
+    p.position.set(sx*(W+0.22), 0, -FZ); cockpitGroup.add(p);
+    [-1,1].forEach(sy=>{                    // A-pillars across the corners
+      const d=cockpitPart(new THREE.BoxGeometry(2.3, 0.32, 0.5), frame, wire);
+      d.position.set(sx*(W-0.70), sy*(H-0.38), -FZ+0.06);
+      d.rotation.z = -sx*sy*0.66;
+      cockpitGroup.add(d);
+    });
+  });
+
+  // dashboard: top edge sits just inside the bottom of the view
+  const dash=cockpitPart(new THREE.BoxGeometry(dW*2.1, 1.3, 1.8), 0x11171f, wire);
+  dash.position.set(0, -dH*0.72-0.62, -DZ); dash.rotation.x=-0.40;
+  cockpitGroup.add(dash);
+  for(let i=0;i<3;i++){
+    const strip=new THREE.Mesh(new THREE.BoxGeometry(dW*0.46, 0.07, 0.09),
+      new THREE.MeshBasicMaterial({color:i===1?0xff2fa8:0x22ffdd, transparent:true, opacity:0.85, fog:false}));
+    strip.position.set((i-1)*dW*0.58, -dH*0.72-0.10, -DZ+0.55); strip.rotation.x=-0.40;
+    cockpitGroup.add(strip); cockpitStrips.push(strip);
+  }
+  // side consoles inside the pillars
+  [-1,1].forEach(sx=>{
+    const c=cockpitPart(new THREE.BoxGeometry(0.85, 1.4, 1.5), 0x11171f, wire);
+    c.position.set(sx*dW*0.82, -dH*0.55, -DZ-0.2); c.rotation.z=sx*0.20;
+    cockpitGroup.add(c);
+  });
+
+  cockpitGroup.visible=false;
+  ship.add(cockpitGroup);
 }
 
 /* radial glow sprite used by engines, pickups, explosions */
@@ -2583,6 +2675,8 @@ function toggleFpv(){
   State.fpv=!State.fpv;
   localStorage.setItem('sr_fpv', State.fpv?'1':'0');
   $('fpv-frame').classList.toggle('on', State.fpv);
+  $('glass').classList.toggle('on', State.fpv);
+  $('hud').classList.toggle('fpv', State.fpv);
   syncFpvButtons();
   if(State.mode!=='menu') showWarn(State.fpv?'COCKPIT VIEW':'CHASE VIEW', '#22ffdd', 1.1);
 }
@@ -3048,13 +3142,20 @@ function updateCamera(dt){
 
   const fpv = State.fpv && State.mode!=='menu';
   if(hullGroup) hullGroup.visible = !fpv;
+  if(cockpitGroup){
+    cockpitGroup.visible = fpv;
+    if(fpv) cockpitStrips.forEach((st,i)=>{
+      st.material.opacity = 0.45 + 0.45*Math.abs(Math.sin(State.time*(1.6+i*0.5)+i));
+    });
+  }
   if(fpv){
     // sit in the cockpit: the ship IS the camera, so the corridor rings and
     // dust carry the sense of where you are in the lane
     const sh=Cam.shake;
     camera.position.x = damp(camera.position.x, Pl.x, 30, dt);
-    camera.position.y = damp(camera.position.y, Pl.y+1.15, 30, dt);
-    camera.position.z = damp(camera.position.z, -2.2 - inten*1.6 - brk*1.5, 8, dt);
+    camera.position.y = damp(camera.position.y, Pl.y+FPV_EYE_Y, 30, dt);
+    // only a slight forward lean at speed, or the canopy would swell into the view
+    camera.position.z = damp(camera.position.z, FPV_EYE_Z - inten*0.6 - brk*0.5, 8, dt);
     if(sh>0.01){
       camera.position.x += rnd(sh,-sh)*1.7;
       camera.position.y += rnd(sh,-sh)*1.7;
@@ -3065,7 +3166,7 @@ function updateCamera(dt){
     const roll = -Pl.vx*0.0017 + (sh>0.01?rnd(sh,-sh)*0.03:0);
     camera.up.set(roll,1,0).normalize();
     camLook.x = damp(camLook.x, Pl.x + clamp(Pl.vx*0.013,-10,10), 13, dt);
-    camLook.y = damp(camLook.y, Pl.y + 1.15 + clamp(Pl.vy*0.015,-10,10), 13, dt);
+    camLook.y = damp(camLook.y, Pl.y + FPV_EYE_Y + clamp(Pl.vy*0.015,-10,10), 13, dt);
     camera.lookAt(camLook.x, camLook.y, -170);
     return;
   }
@@ -3187,6 +3288,38 @@ function updateHUD(dt){
 
   const si=speedIntensity();
   const corona = S.dist/S.target > 0.86;
+  /* --- invisible wall: warn early, shout when pinned --- */
+  const edge=(v, lim)=>{
+    const a=Math.abs(v)/lim;
+    return { near: clamp((a-0.66)/0.34, 0, 1), pinned: a>0.985 };
+  };
+  const ex=edge(Pl.x, CFG.boundX), ey=edge(Pl.y, CFG.boundY);
+  const wall=(id, on, e)=>{
+    const v = on ? (e.pinned ? 0.85 : e.near*0.55) : 0;
+    const col = e.pinned ? '#ff4444' : '#ffc233';
+    const key = v.toFixed(2)+col;
+    if(HC[id]===key) return;                 // only touch the DOM when it changes
+    HC[id]=key;
+    const el=$(id);
+    el.style.opacity=String(v);
+    el.style.setProperty('--c', col);
+  };
+  wall('bw-l', Pl.x<0, ex); wall('bw-r', Pl.x>0, ex);
+  wall('bw-b', Pl.y<0, ey); wall('bw-t', Pl.y>0, ey);
+
+  /* --- in the cockpit the ring is a projection on the glass: tilt it, and
+         let it bank a little against the airframe --- */
+  if(State.fpv){
+    const roll = clamp(-Pl.vx*0.011, -6, 6);
+    const shiftY = clamp(-Pl.vy*0.006, -1.6, 1.6);
+    $('cockpit').style.transform =
+      `translate(-50%,-50%) perspective(1100px) rotateX(8deg) rotateZ(${roll.toFixed(2)}deg) `+
+      `translateY(${(2.5+shiftY).toFixed(2)}%) scale(0.80)`;
+  } else if(HC.fpvT!=='0'){
+    HC.fpvT='0'; $('cockpit').style.transform='translate(-50%,-50%)';
+  }
+  if(State.fpv) HC.fpvT='1';
+
   $('speed-veil').style.opacity = String(clamp(Math.max(si*0.95, corona?0.55:0),0,1));
   const veilCol = breakerT>0 ? '255,47,168' : corona ? '255,140,60'
                 : redline ? '255,180,60' : '120,200,255';
@@ -3514,6 +3647,8 @@ function initUI(){
   $('btn-fpv2').onclick=toggleFpv;
   syncFpvButtons();
   $('fpv-frame').classList.toggle('on', State.fpv);
+  $('glass').classList.toggle('on', State.fpv);
+  $('hud').classList.toggle('fpv', State.fpv);
   $('btn-mouse').onclick=()=>{
     State.mouseSteer=!State.mouseSteer;
     localStorage.setItem('sr_mouse',State.mouseSteer?'1':'0');
