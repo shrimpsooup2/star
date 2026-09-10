@@ -29,6 +29,7 @@ canvas#gl{display:block;position:fixed;inset:0;width:100%;height:100%;}
 
 /* ---------- FULL SCREEN FX LAYERS ---------- */
 .layer{position:fixed;inset:0;pointer-events:none;}
+#grade{z-index:2}
 #vignette{
   z-index:3;
   background:radial-gradient(ellipse 78% 68% at 50% 50%, rgba(0,0,0,0) 40%, rgba(0,0,0,.55) 78%, rgba(0,0,0,.9) 100%);
@@ -268,6 +269,7 @@ button:active{transform:scale(.96)}
 <body>
 <canvas id="gl"></canvas>
 
+<div id="grade" class="layer"></div>
 <div id="speed-veil" class="layer"></div>
 <div id="vignette" class="layer"></div>
 <div id="scanlines" class="layer"></div>
@@ -866,13 +868,13 @@ if(isTouch){
 /* ================================================================ RENDERER */
 let renderer, scene, camera, starLight, ambient, rimLight, skyLight, keyLight;
 let rimColor = new THREE.Color(0x9fd8ff);   // silhouette halo, tinted by the sector star
-let ship, shipGlow=[], shieldMesh, engineCones=[];
-let starGroup, starCore, starCorona, starHalo, starUniforms;
+let ship, shipGlow=[], shieldMesh, engineCones=[], noseLight=null;
+let starGroup, starCore, starCorona, starHalo, starUniforms, starProms=[], starFlare=null;
 let nebula, dust, conduitRings=[], streaks, streakGeo;
 const Cam = { shake:0, roll:0, kick:0, fovBase:72 };
 const camLook = { x:0, y:0 };
 
-const starProps = { radius:2600, rotAxis:new THREE.Vector3(0,1,0), rotSpeed:0.002, flareSpeed:0.02, flareAmp:0.12, hue:0.08 };
+const starProps = { radius:2600, rotAxis:new THREE.Vector3(0,1,0), rotSpeed:0.002, flareSpeed:0.02, flareAmp:0.12, hue:0.08, lightBase:2.4 };
 
 function initThree(){
   const canvas=$('gl');
@@ -894,7 +896,8 @@ function initThree(){
   keyLight = new THREE.DirectionalLight(0xdce8ff, 1.5); keyLight.position.set(-0.35,0.7,1); scene.add(keyLight);
   rimLight = new THREE.PointLight(0x22ffdd, 2.2, 300); rimLight.position.set(0,10,40); scene.add(rimLight);
 
-  buildNebula(); buildStreaks(); buildDust(); buildConduit(); buildStar(); buildShip(); buildEntityPools();
+  buildNebula(); buildStreaks(); buildDust(); buildConduit(); buildPlanetoids();
+  buildStar(); buildShip(); buildEntityPools();
   rollSector(1);
   fitCamera();
   addEventListener('resize', onResize);
@@ -979,20 +982,65 @@ function buildDust(){
   scene.add(dust);
 }
 
-/* the corridor: octagonal wireframe rings that stream past you */
-function buildConduit(){
-  const COUNT=30, SPACING=190;
-  const pts=[], sides=8;
-  for(let i=0;i<=sides;i++){
-    const a=(i/sides)*Math.PI*2 + Math.PI/8;
-    pts.push(new THREE.Vector3(Math.cos(a)*(CFG.boundX+22), Math.sin(a)*(CFG.boundY+18), 0));
+/* huge bodies drifting far outside the lane — pure parallax, no collision */
+let planetoids=[];
+function buildPlanetoids(){
+  for(let i=0;i<3;i++){
+    const g=new THREE.Group();
+    const body=new THREE.Mesh(new THREE.IcosahedronGeometry(1,2),
+      new THREE.MeshPhongMaterial({color:0x6a6f7a, flatShading:true, shininess:4,
+        emissive:0x0a0d14, fog:false}));
+    g.add(body); g.userData.body=body;
+    const air=new THREE.Mesh(new THREE.SphereGeometry(1.06,20,14),
+      new THREE.MeshBasicMaterial({color:0x5588cc, transparent:true, opacity:0.14,
+        side:THREE.BackSide, blending:THREE.AdditiveBlending, depthWrite:false, fog:false}));
+    g.add(air); g.userData.air=air;
+    g.visible=false; scene.add(g); planetoids.push(g);
   }
-  const g=new THREE.BufferGeometry().setFromPoints(pts);
-  for(let i=0;i<COUNT;i++){
-    const mat=new THREE.LineBasicMaterial({color:0x1c6f88, transparent:true, opacity:0.5});
-    const ring=new THREE.Line(g, mat);
-    ring.position.z = -i*SPACING;
-    ring.userData.spacing = COUNT*SPACING;
+}
+function placePlanetoid(g, far){
+  const R=rnd(2200,600);
+  g.scale.setScalar(R);
+  const side=chance(0.5)?1:-1;
+  g.position.set(side*rnd(6500,1400), rnd(2600,-2200), far?-rnd(26000,12000):-rnd(12000,7000));
+  g.userData.body.material.color.setHSL((starProps.hue+rnd(0.25,-0.25)+1)%1, rnd(0.35,0.10), rnd(0.42,0.18));
+  g.userData.air.material.color.setHSL((starProps.hue+0.5)%1, 0.6, 0.5);
+  g.userData.air.material.opacity=rnd(0.20,0.06);
+  g.userData.spin=rnd(0.05,-0.05);
+  g.visible=true;
+}
+function updatePlanetoids(dt, move){
+  for(const g of planetoids){
+    if(!g.visible) continue;
+    g.position.z += move*0.055;          // slow parallax against the foreground
+    g.rotation.y += g.userData.spin*dt;
+    if(g.position.z > 3000) placePlanetoid(g, true);
+  }
+}
+
+/* the corridor: octagonal wireframe rings that stream past you */
+function ringPoints(sides, sx, sy, rot){
+  const pts=[];
+  for(let i=0;i<=sides;i++){
+    const a=(i/sides)*Math.PI*2 + rot;
+    pts.push(new THREE.Vector3(Math.cos(a)*sx, Math.sin(a)*sy, 0));
+  }
+  return pts;
+}
+function buildConduit(){
+  const near=new THREE.BufferGeometry().setFromPoints(
+    ringPoints(8, CFG.boundX+22, CFG.boundY+18, Math.PI/8));
+  for(let i=0;i<30;i++){
+    const ring=new THREE.Line(near, new THREE.LineBasicMaterial({color:0x1c6f88, transparent:true, opacity:0.5}));
+    ring.position.z=-i*190; ring.userData.spacing=30*190; ring.userData.layer=0;
+    scene.add(ring); conduitRings.push(ring);
+  }
+  // a wider, sparser second layer reads as depth without adding clutter
+  const far=new THREE.BufferGeometry().setFromPoints(
+    ringPoints(6, (CFG.boundX+22)*2.15, (CFG.boundY+18)*2.15, 0));
+  for(let i=0;i<14;i++){
+    const ring=new THREE.Line(far, new THREE.LineBasicMaterial({color:0x14485c, transparent:true, opacity:0.25}));
+    ring.position.z=-i*430; ring.userData.spacing=14*430; ring.userData.layer=1;
     scene.add(ring); conduitRings.push(ring);
   }
 }
@@ -1047,6 +1095,19 @@ function buildStar(){
   starHalo = new THREE.Mesh(new THREE.SphereGeometry(1.25,24,16),
     new THREE.MeshBasicMaterial({color:0xffaa33, transparent:true, opacity:0.13, blending:THREE.AdditiveBlending, side:THREE.BackSide, fog:false, depthWrite:false}));
   starGroup.add(starHalo);
+
+  // arcs of plasma standing off the limb
+  starProms=[];
+  for(let i=0;i<5;i++){
+    const p=new THREE.Mesh(new THREE.TorusGeometry(0.22,0.030,6,22,Math.PI*rnd(1.4,0.5)),
+      new THREE.MeshBasicMaterial({color:0xffcc66, transparent:true, opacity:0.5,
+        blending:THREE.AdditiveBlending, depthWrite:false, fog:false}));
+    starGroup.add(p); starProms.push(p);
+  }
+  starFlare = new THREE.Sprite(new THREE.SpriteMaterial({map:glowTexture(), color:0xffcc66,
+    transparent:true, opacity:0.5, blending:THREE.AdditiveBlending, depthWrite:false, fog:false}));
+  starFlare.scale.setScalar(3.4); starGroup.add(starFlare);
+
   scene.add(starGroup);
 }
 
@@ -1063,8 +1124,18 @@ function generateStar(sector){
   starUniforms.boil.value = 0.7+Math.random()*1.1;
   rimColor.setHSL(hue, 0.5, 0.72);
   starCorona.material.color = new THREE.Color().setHSL(hue,sat,Math.min(1,lit+0.28));
+  starProms.forEach((p,i)=>{
+    const a=rnd(6.28), tilt=rnd(1.2,-1.2);
+    p.position.set(Math.cos(a)*0.94, Math.sin(a)*0.94, rnd(0.4,-0.4));
+    p.rotation.set(tilt, rnd(6.28), a+Math.PI/2);
+    p.scale.setScalar(rnd(1.5,0.6));
+    p.material.color.setHSL(hue, Math.min(1,sat+0.15), Math.min(1,lit+0.3));
+    p.userData.drift=rnd(0.25,-0.25);
+  });
+  if(starFlare) starFlare.material.color.setHSL(hue, sat*0.8, Math.min(1,lit+0.35));
   starHalo.material.color = col;
   starLight.color = col.clone().lerp(new THREE.Color(0xffffff),0.35);
+  starProps.lightBase = 1.8+Math.random()*1.4;
   ambient.color = col.clone().multiplyScalar(0.16).lerp(new THREE.Color(0x1a2340),0.6);
   starProps.rotSpeed = rnd(0.004,-0.004);
   starProps.rotAxis.set(rnd(1,-1),rnd(1,0.2),rnd(1,-1)).normalize();
@@ -1074,6 +1145,13 @@ function generateStar(sector){
   nebula.userData.uni.tint.value.setHSL((hue+0.5)%1, 0.55, 0.30);
   nebula.userData.uni.tint2.value.setHSL((hue+0.12)%1, 0.65, 0.13);
   conduitRings.forEach(r=>r.material.color.setHSL((hue+0.45)%1,0.75,0.35));
+  planetoids.forEach((g,i)=>placePlanetoid(g, i>0));
+  // tint the screen edges with the sector's star so each run reads differently
+  const g1=new THREE.Color().setHSL(hue,0.75,0.30);
+  const g2=new THREE.Color().setHSL((hue+0.55)%1,0.8,0.16);
+  const rgba=(c,a)=>`rgba(${Math.round(c.r*255)},${Math.round(c.g*255)},${Math.round(c.b*255)},${a})`;
+  $('grade').style.background =
+    `radial-gradient(ellipse 76% 66% at 50% 46%, rgba(0,0,0,0) 45%, ${rgba(g2,.30)} 78%, ${rgba(g1,.42)} 100%)`;
 }
 
 /* ------------------------------------------------------------------ SHIP */
@@ -1113,7 +1191,7 @@ function buildShip(){
     glow.scale.setScalar(9); glow.position.set(x,0.35,6.2); ship.add(glow); shipGlow.push(glow);
   });
 
-  const hl=new THREE.PointLight(0xffffff,2.4,320); hl.position.set(0,0.5,-8); ship.add(hl);
+  noseLight=new THREE.PointLight(0xffffff,2.6,340); noseLight.position.set(0,0.5,-8); ship.add(noseLight);
 
   shieldMesh = new THREE.Mesh(new THREE.IcosahedronGeometry(7.4,1),
     new THREE.MeshBasicMaterial({color:0x48a8ff, wireframe:true, transparent:true, opacity:0.55, fog:false}));
@@ -1325,7 +1403,7 @@ function buildEntityPools(){
   const sizes={ast:140,mine:24,gate:14,wall:16,pickup:26,flare:4,
                splitter:14,spire:24,tumbler:12,comet:8,cloud:6};
   for(const t in sizes) for(let i=0;i<sizes[t];i++) pools[t].push(newMesh(t));
-  buildBullets(); buildParticles(); buildPopups();
+  buildBullets(); buildParticles(); buildPopups(); buildShards(); buildRings(); buildTrail(); buildLights();
 }
 
 function grab(type){
@@ -1444,13 +1522,22 @@ function buildBullets(){
   bulletMatHeavy=new THREE.MeshBasicMaterial({color:0xd8f0ff,transparent:true,opacity:1.0,blending:THREE.AdditiveBlending,fog:false});
   for(let i=0;i<48;i++){
     const m=new THREE.Mesh(geo,bulletMat); m.visible=false; scene.add(m);
-    bullets.push({mesh:m, active:false, x:0,y:0,z:0, prevZ:0, power:1});
+    const head=new THREE.Sprite(new THREE.SpriteMaterial({map:glowTexture(),color:0x9fe8ff,
+      transparent:true,opacity:0.9,blending:THREE.AdditiveBlending,depthWrite:false,fog:false}));
+    head.scale.setScalar(5); head.position.z=-3.4; m.add(head);
+    bullets.push({mesh:m, active:false, x:0,y:0,z:0, prevZ:0, power:1, head});
   }
   // full-charge beam
   const lg=new THREE.CylinderGeometry(CFG.lanceR*0.55, CFG.lanceR*0.22, CFG.lanceLen, 12, 1, true);
   lg.rotateX(Math.PI/2);
   lance=new THREE.Mesh(lg, new THREE.MeshBasicMaterial({color:0xffe6b0,transparent:true,opacity:0.9,
     blending:THREE.AdditiveBlending, depthWrite:false, fog:false, side:THREE.DoubleSide}));
+  const core=new THREE.Mesh(
+    new THREE.CylinderGeometry(CFG.lanceR*0.18, CFG.lanceR*0.06, CFG.lanceLen, 8, 1, true),
+    new THREE.MeshBasicMaterial({color:0xffffff, transparent:true, opacity:0.95,
+      blending:THREE.AdditiveBlending, depthWrite:false, fog:false, side:THREE.DoubleSide}));
+  core.geometry.rotateX(Math.PI/2);
+  lance.add(core); lance.userData.core=core;
   lance.visible=false; scene.add(lance);
 }
 /* three tiers: a tap, a heavy slug, and a full-charge lance that pierces
@@ -1465,10 +1552,12 @@ function releaseShot(c){
 
   if(tier===0){
     fireBullet(Pl.x-2.6, Pl.y, 1); fireBullet(Pl.x+2.6, Pl.y, 1);
+    flashLight(Pl.x, Pl.y, -12, 0x9fe8ff, 4, 200, 0.10);
     Audio_.shoot(0); Cam.kick+=0.25;
     emit(Pl.x, Pl.y, -9, 5, 0x9fe4ff, 26, 5, 0.2);
   } else if(tier===1){
     fireBullet(Pl.x, Pl.y, 2);
+    flashLight(Pl.x, Pl.y, -12, 0xbfe8ff, 9, 340, 0.16);
     Audio_.shoot(1); Cam.kick+=0.9; Cam.shake+=0.25;
     emit(Pl.x, Pl.y, -9, 14, 0xbfe8ff, 40, 8, 0.32);
   } else {
@@ -1480,6 +1569,8 @@ function fireLance(){
   const S=State;
   Audio_.lance(); Cam.kick+=3.4; Cam.shake+=1.5;
   flashEl('heal-flash',0.22,0.35);
+  flashLight(Pl.x, Pl.y, -18, 0xffe6b0, 22, 900, 0.35);
+  shockRing(Pl.x, Pl.y, -14, 0xffe6b0, 300, 0.4, 2);
   lance.position.set(Pl.x, Pl.y, -CFG.lanceLen/2);
   lance.scale.set(1,1,1);
   lance.visible=true; lanceT=0.42;
@@ -1506,6 +1597,7 @@ function fireBullet(x,y,power){
     b.mesh.visible=true; b.mesh.position.set(x,y,-6);
     b.mesh.scale.set(b.power>1?2.4:1, b.power>1?2.4:1, b.power>1?1.7:1);
     b.mesh.material=b.power>1?bulletMatHeavy:bulletMat;
+    b.head.material.color.setHex(b.power>1?0xd8f0ff:0x9fe8ff);
     return b;
   }
   return null;
@@ -1566,6 +1658,157 @@ function updateParticles(dt, worldSpeed){
   Parts.geo.attributes.position.needsUpdate=true;
   Parts.geo.attributes.psize.needsUpdate=true;
   Parts.geo.attributes.pcolor.needsUpdate=true;
+}
+
+/* ================================================================= FX
+   Chunky debris, expanding shock rings and a drive ribbon. All pooled,
+   all stock materials.
+   ==================================================================== */
+const Shards={ list:[], geo:null };
+function buildShards(){
+  const geos=[ new THREE.TetrahedronGeometry(1,0), new THREE.OctahedronGeometry(1,0),
+               new THREE.BoxGeometry(1.4,0.7,1.1) ];
+  for(let i=0;i<90;i++){
+    const m=new THREE.Mesh(geos[i%3], new THREE.MeshPhongMaterial({
+      color:0x9a8878, flatShading:true, shininess:8, emissive:0x201814 }));
+    m.visible=false; scene.add(m);
+    Shards.list.push({mesh:m, active:false, x:0,y:0,z:0, vx:0,vy:0,vz:0,
+                      rx:0,ry:0,rz:0, life:0, max:1, size:1});
+  }
+}
+function burstShards(x,y,z,count,color,speed,size){
+  for(let k=0;k<count;k++){
+    const s=Shards.list.find(o=>!o.active); if(!s) return;
+    s.active=true; s.mesh.visible=true;
+    s.x=x; s.y=y; s.z=z;
+    const a=Math.random()*Math.PI*2, b=Math.acos(rnd(1,-1)), sp=speed*(0.4+Math.random()*0.9);
+    s.vx=Math.sin(b)*Math.cos(a)*sp; s.vy=Math.sin(b)*Math.sin(a)*sp; s.vz=Math.cos(b)*sp*0.7;
+    s.rx=rnd(9,-9); s.ry=rnd(9,-9); s.rz=rnd(9,-9);
+    s.size=size*rnd(1.5,0.5);
+    s.max=s.life=rnd(1.5,0.7);
+    s.mesh.material.color.setHex(color);
+    s.mesh.scale.setScalar(s.size);
+    s.mesh.rotation.set(rnd(6.3),rnd(6.3),rnd(6.3));
+  }
+}
+function updateShards(dt, worldSpeed){
+  for(const s of Shards.list){
+    if(!s.active) continue;
+    s.life-=dt;
+    if(s.life<=0){ s.active=false; s.mesh.visible=false; continue; }
+    s.x+=s.vx*dt; s.y+=s.vy*dt; s.z+=s.vz*dt + worldSpeed*dt*60;
+    const k=Math.pow(0.985, dt*60);
+    s.vx*=k; s.vy*=k; s.vz*=k;
+    s.mesh.position.set(s.x,s.y,s.z);
+    s.mesh.rotation.x+=s.rx*dt; s.mesh.rotation.y+=s.ry*dt; s.mesh.rotation.z+=s.rz*dt;
+    s.mesh.scale.setScalar(s.size*Math.min(1, s.life/s.max*1.6));
+    if(s.z>140){ s.active=false; s.mesh.visible=false; }
+  }
+}
+
+/* A small pool of point lights claimed by events. Explosions, muzzle flashes
+   and impacts throw real light onto the rock around them. */
+const Lights={ pool:[] };
+function buildLights(){
+  for(let i=0;i<3;i++){
+    const l=new THREE.PointLight(0xffffff, 0, 700, 2);
+    l.visible=false; scene.add(l);
+    Lights.pool.push({l, life:0, max:1, peak:0});
+  }
+}
+function flashLight(x,y,z,color,peak,dist,life){
+  let slot=Lights.pool.find(o=>o.life<=0);
+  if(!slot) slot=Lights.pool.reduce((a,b)=>a.life<b.life?a:b);
+  slot.life=slot.max=life; slot.peak=peak;
+  slot.l.visible=true; slot.l.color.setHex(color); slot.l.distance=dist;
+  slot.l.position.set(x,y,z); slot.l.intensity=peak;
+  slot.z=z;
+}
+function updateLights(dt, worldSpeed){
+  for(const o of Lights.pool){
+    if(o.life<=0) continue;
+    o.life-=dt;
+    if(o.life<=0){ o.l.visible=false; o.l.intensity=0; continue; }
+    o.z += worldSpeed*dt*60;
+    o.l.position.z=o.z;
+    const f=o.life/o.max;
+    o.l.intensity = o.peak*f*f;
+  }
+}
+
+const Rings={ list:[] };
+function buildRings(){
+  const g=new THREE.RingGeometry(0.82,1,40);
+  for(let i=0;i<16;i++){
+    const m=new THREE.Mesh(g, new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,
+      opacity:0, side:THREE.DoubleSide, blending:THREE.AdditiveBlending, depthWrite:false, fog:false}));
+    m.visible=false; scene.add(m);
+    Rings.list.push({mesh:m, active:false, x:0,y:0,z:0, r:0, grow:0, life:0, max:1, flat:true});
+  }
+}
+function shockRing(x,y,z,color,grow,life,startR){
+  const r=Rings.list.find(o=>!o.active); if(!r) return;
+  r.active=true; r.mesh.visible=true;
+  r.x=x; r.y=y; r.z=z; r.r=startR||1; r.grow=grow; r.max=r.life=life;
+  r.mesh.material.color.setHex(color);
+  r.mesh.position.set(x,y,z);
+  r.mesh.rotation.set(0,0,rnd(6.3));
+}
+function updateRings(dt, worldSpeed){
+  for(const r of Rings.list){
+    if(!r.active) continue;
+    r.life-=dt;
+    if(r.life<=0){ r.active=false; r.mesh.visible=false; continue; }
+    r.r += r.grow*dt;
+    r.z += worldSpeed*dt*60;
+    r.mesh.position.z=r.z;
+    r.mesh.scale.setScalar(r.r);
+    r.mesh.material.opacity = Math.pow(r.life/r.max, 1.5)*0.85;
+  }
+}
+
+/* tapered ribbon streaming off the drive */
+const Trail={ mesh:null, pts:[], N:26, pos:null, geo:null };
+function buildTrail(){
+  const N=Trail.N;
+  const g=new THREE.BufferGeometry();
+  Trail.pos=new Float32Array(N*2*3);
+  const idx=[];
+  for(let i=0;i<N-1;i++){
+    const a=i*2, b=i*2+1, c=(i+1)*2, d=(i+1)*2+1;
+    idx.push(a,b,c, b,d,c);
+  }
+  g.setAttribute('position', new THREE.BufferAttribute(Trail.pos,3));
+  g.setIndex(idx);
+  Trail.geo=g;
+  Trail.mesh=new THREE.Mesh(g, new THREE.MeshBasicMaterial({color:0x55ffe8, transparent:true,
+    opacity:0.55, side:THREE.DoubleSide, blending:THREE.AdditiveBlending, depthWrite:false, fog:false}));
+  Trail.mesh.frustumCulled=false;
+  scene.add(Trail.mesh);
+  for(let i=0;i<N;i++) Trail.pts.push({x:0,y:0,z:0});
+}
+function updateTrail(dt, worldSpeed, intensity){
+  const P=Trail.pts;
+  for(let i=P.length-1;i>0;i--){
+    P[i].x=P[i-1].x; P[i].y=P[i-1].y;
+    P[i].z=P[i-1].z + worldSpeed*dt*60*0.55;
+  }
+  P[0].x=Pl.x; P[0].y=Pl.y+0.4; P[0].z=6.5;
+  const pos=Trail.pos, N=Trail.N;
+  const w0=2.6+intensity*2.2;
+  for(let i=0;i<N;i++){
+    const t=i/(N-1);
+    const w=w0*(1-t)*(1-t);
+    const k=i*6;
+    pos[k]=P[i].x-w;  pos[k+1]=P[i].y; pos[k+2]=P[i].z;
+    pos[k+3]=P[i].x+w; pos[k+4]=P[i].y; pos[k+5]=P[i].z;
+  }
+  Trail.geo.attributes.position.needsUpdate=true;
+  Trail.mesh.material.opacity = 0.12 + intensity*0.5;
+  Trail.mesh.material.color.setHex(breakerT>0?0xff2fa8:(State.gear>=CFG.maxGear?0xffc233:0x55ffe8));
+}
+function resetTrail(){
+  for(const p of Trail.pts){ p.x=Pl.x; p.y=Pl.y; p.z=6.5; }
 }
 
 /* -------------------------------------------------------------- POPUPS */
@@ -1967,7 +2210,16 @@ function updatePlayer(dt, ds, frozen){
     g.scale.setScalar(8+flame*5.5+Math.random()*1.4);
     g.material.color.setHex(breakerT>0?0xff2fa8:(S.gear>=CFG.maxGear?0xffaa33:0x44ffe6));
   });
-  rimLight.color.setHex(breakerT>0?0xff2fa8:0x22ffdd);
+  // one aura light carries drive colour, redline, breaker and damage
+  const sev = clamp((48-S.hull)/48, 0, 1);
+  let auraCol = breakerT>0 ? 0xff2fa8 : (S.gear>=CFG.maxGear ? 0xffaa33 : 0x22ffdd);
+  let auraInt = 2.2 + inten*1.3;
+  if(sev>0 && S.mode==='playing'){
+    const blink = 0.35+0.65*Math.abs(Math.sin(State.time*(3+sev*7)));
+    if(sev*blink > 0.42){ auraCol = 0xff3322; auraInt = 2.0 + sev*5.0*blink; }
+  }
+  rimLight.color.setHex(auraCol);
+  rimLight.intensity = damp(rimLight.intensity, auraInt, 12, dt);
   rimLight.position.set(Pl.x, Pl.y+8, 34);
 
   /* ---- pulse cannon: hold to charge, release to fire ---- */
@@ -2019,6 +2271,19 @@ function updatePlayer(dt, ds, frozen){
   } else ship.visible = true;
   if(S.hull>0 && S.hull<100 && !frozen) S.hull=Math.min(100, S.hull + 0.55*dt);
 
+  /* venting and warning lamp as the hull goes */
+  if(S.hull<48 && S.mode==='playing'){
+    const sev2=(48-S.hull)/48;
+    if(Math.random() < sev2*0.55)
+      emit(Pl.x+rnd(3.4,-3.4), Pl.y+rnd(2,-1), rnd(6,2), 1,
+           sev2>0.6?0xff6633:0x775544, 10+sev2*16, 5+sev2*4, 0.75);
+  }
+
+  /* the lamp burns brighter as the cannon spins up */
+  noseLight.intensity = damp(noseLight.intensity,
+    2.6 + (S.charging?S.charge*7:0) + inten*1.4, 9, dt);
+  noseLight.color.setHex(S.charging && S.charge>0.72 ? 0xffd27a : 0xffffff);
+
   /* ---- combo decay ---- */
   if(S.comboTimer>0) S.comboTimer-=dt;
   else if(S.combo>0){ S.combo=Math.max(0, S.combo - 16*dt); }
@@ -2040,12 +2305,17 @@ function blowout(){
   Cam.shake+=1.5; Audio_.hit(); flashEl('damage-flash',0.7,0.5);
   showWarn('DRIVE BLOWOUT','#ff4444',1.4);
   emit(Pl.x,Pl.y,6,26,0xffaa33,42,9,0.8);
+  burstShards(Pl.x,Pl.y,6, 6, 0x554433, 36, 1.1);
+  flashLight(Pl.x,Pl.y,6, 0xffaa33, 14, 600, 0.5);
   popup('OVERHEAT','#ff4444',Pl.x,Pl.y+12,0,1.1);
   if(S.hull<=0) die();
 }
 function tryBreaker(){
   if(State.mode!=='playing' || breakerT>0 || State.flux<100) return;
   breakerT=CFG.breakerTime;
+  shockRing(Pl.x,Pl.y,0, 0xff2fa8, 420, 0.8, 4);
+  shockRing(Pl.x,Pl.y,0, 0xffffff, 260, 0.6, 2);
+  flashLight(Pl.x,Pl.y,0, 0xff2fa8, 16, 900, 0.7);
   Audio_.breaker(); Audio_.duck(true);
   Cam.shake+=2.2; Cam.kick+=3;
   $('breaker-veil').style.opacity='1';
@@ -2081,6 +2351,7 @@ function doGraze(e, sx, sy){
   addScore(40, e.x, e.y, 4, '#22ffdd', Math.floor(State.combo)%5===0?'GRAZE':'', 0.8);
   if(Math.floor(State.combo)%5!==0) popup('+'+fmt(40*State.mult), '#9ffff0', e.x, e.y, 4, 0.72);
   emit((sx+e.x)/2,(sy+e.y)/2,2,4,0x22ffdd,26,5,0.32);
+  shockRing((sx+e.x)/2,(sy+e.y)/2,2, 0x22ffdd, 120, 0.22, 1.5);
   Audio_.graze(State.combo);
   Cam.kick+=0.35;
 }
@@ -2090,12 +2361,17 @@ function damage(amount, x, y){
   S.sectorNoHit=false;
   if(S.shields>0){
     S.shields--; S.iFrame=0.8;
+    shockRing(x,y,0, 0x48a8ff, 210, 0.45, 5);
+    flashLight(x,y,4, 0x48a8ff, 10, 480, 0.35);
     Audio_.shieldHit(); Cam.shake+=0.9;
     emit(x,y,0,26,0x48a8ff,44,8,0.55);
     popup('SHIELD','#48a8ff',x,y,4,1.0);
     flashEl('damage-flash',0.32,0.35);
     return false;
   }
+  burstShards(x,y,0, 6, 0x9a8878, 40, 1.2);
+  shockRing(x,y,0, 0xff5522, 190, 0.5, 3);
+  flashLight(x,y,4, 0xff4422, 11, 560, 0.4);
   S.hull-=amount; S.combo=0; S.comboTimer=0;
   S.flux=Math.max(0,S.flux*0.5);
   if(S.gear>0){ S.gear--; S.shiftBar=40; }
@@ -2141,21 +2417,32 @@ function stepWorld(dt, ds){
   dust.geometry.attributes.position.needsUpdate=true;
   dust.material.opacity = 0.25+speedIntensity()*0.5;
 
-  /* corridor rings */
-  const span=conduitRings.length*190;
+  /* corridor rings, two layers */
+  const inten0=speedIntensity();
   for(const r of conduitRings){
-    r.position.z += move;
-    if(r.position.z>120) r.position.z -= span;
-    const f = clamp(1-(-r.position.z)/2600, 0, 1);
-    r.material.opacity = 0.10 + f*0.42;
+    r.position.z += move * (r.userData.layer? 0.55 : 1);
+    if(r.position.z>140) r.position.z -= r.userData.spacing;
+    const f = clamp(1-(-r.position.z)/(r.userData.layer?5200:2600), 0, 1);
+    r.material.opacity = r.userData.layer
+      ? (0.04 + f*0.20)
+      : (0.08 + f*(0.34 + inten0*0.30));
   }
+  updatePlanetoids(dt, move);
 
   /* star position & scale */
   const remain = Math.max(0, State.target - State.dist);
   const visual = Math.min(remain, 9000);
   starGroup.position.z = -(visual + starProps.radius*0.98);
   starLight.position.set(Pl.x*0.3, Pl.y*0.3, starGroup.position.z*0.4);
-  starHalo.material.opacity = 0.10 + (1-visual/9000)*0.22;
+  const prox = clamp(1-visual/9000, 0, 1);          // 0 far out, 1 on top of it
+  if(State.mode!=='detonate'){                       // the blast drives the lights itself
+    const flicker = 0.94 + Math.sin(State.time*2.7)*0.04 + Math.sin(State.time*11.3)*0.02;
+    starLight.intensity = starProps.lightBase*(1+prox*prox*3.2)*flicker;
+    ambient.intensity   = 0.85 + prox*prox*1.5;
+    skyLight.intensity  = 0.85 + prox*1.1;
+  }
+  starHalo.material.opacity = 0.10 + prox*0.30;
+  if(starFlare) starFlare.scale.setScalar(3.0 + prox*3.5);
   animateStar(dt);
 
   /* entities */
@@ -2166,6 +2453,8 @@ function stepWorld(dt, ds){
 
     if(e.type==='ast' || e.type==='splitter'){
       m.rotation.x+=e.spinX*ds; m.rotation.y+=e.spinY*ds;
+      const halo=m.userData.halo;
+      if(halo) halo.material.opacity = 0.30 + 0.55*clamp(1-(-e.z)/1500, 0, 1);
       if(e.vx||e.vy){ e.x+=e.vx*dt; e.y+=e.vy*dt; }
       if(e.type==='splitter'){
         const pu=0.4+Math.sin(State.time*4+e.t)*0.22;
@@ -2392,7 +2681,10 @@ function collect(e, sx, sy){
     popup('+'+fmt(150*State.mult),'#ff2fa8',e.x,e.y,4,0.95);
     Audio_.pickup();
   }
-  emit(e.x,e.y,0,16,e.kind==='shield'?0x48a8ff:e.kind==='repair'?0x44ff88:0xff2fa8,32,7,0.5);
+  const pc = e.kind==='shield'?0x48a8ff : e.kind==='repair'?0x44ff88 : 0xff2fa8;
+  emit(e.x,e.y,0,16,pc,32,7,0.5);
+  shockRing(e.x,e.y,0, pc, 130, 0.4, 2);
+  flashLight(e.x,e.y,2, pc, 6, 300, 0.3);
 }
 
 function hitEntity(e, byRam, power){
@@ -2420,7 +2712,12 @@ function hitEntity(e, byRam, power){
   State.flux=Math.min(100, State.flux + (byRam?1:2));
   addScore(base, e.x, e.y, e.z, byRam?'#ff2fa8':'#ffddaa', byRam?'':'', 0.9);
   if(!byRam) popup('+'+fmt(base*State.mult), '#ffddaa', e.x, e.y, e.z, 0.8);
-  emit(e.x,e.y,e.z, isMine?26:16, isMine?0xff3322:0xffaa66, isMine?48:32, isMine?9:7, 0.55);
+  const big = isMine || e.type==='splitter' || e.type==='comet' || e.size===1;
+  const col = isMine?0xff5522 : e.type==='comet'?0x9fe4ff : e.type==='splitter'?0xa8d8ff : 0xffaa66;
+  emit(e.x,e.y,e.z, big?26:16, col, big?48:32, big?9:7, 0.55);
+  burstShards(e.x,e.y,e.z, big?7:4, isMine?0x6b3320:0x8a7864, big?34:24, big?1.5:0.9);
+  shockRing(e.x,e.y,e.z, col, big?150:90, big?0.45:0.32, (e.r||5)*0.6);
+  flashLight(e.x,e.y,e.z, col, big?9:5, big?520:300, big?0.35:0.22);
   Audio_.kill(e.size||0);
   killEnt(e);
 }
@@ -2436,6 +2733,11 @@ function animateStar(dt){
     pos.setXYZ(i,x*s,y*s,z*s);
   }
   pos.needsUpdate=true;
+  starProms.forEach((p,i)=>{
+    p.rotation.z += (p.userData.drift||0)*dt;
+    p.material.opacity = 0.34 + Math.sin(State.time*1.4+i*1.7)*0.22;
+  });
+  if(starFlare) starFlare.material.opacity = 0.36 + Math.sin(State.time*0.8)*0.12;
   starGroup.rotateOnAxis(starProps.rotAxis, starProps.rotSpeed*dt*60);
   starUniforms.time.value = State.time*0.9;
 }
@@ -2557,7 +2859,16 @@ function updateHUD(dt){
   $('ret-arms').setAttribute('stroke',
     breakerT>0?'#ff2fa8' : full?'#ffd27a' : (S.energy<CFG.tapCost?'#ff6666':'#22ffdd'));
 
-  $('speed-veil').style.opacity = String(clamp(speedIntensity()*0.9,0,1));
+  const si=speedIntensity();
+  const corona = S.dist/S.target > 0.86;
+  $('speed-veil').style.opacity = String(clamp(Math.max(si*0.95, corona?0.55:0),0,1));
+  const veilCol = breakerT>0 ? '255,47,168' : corona ? '255,140,60'
+                : redline ? '255,180,60' : '120,200,255';
+  if(HC.veil!==veilCol){
+    HC.veil=veilCol;
+    $('speed-veil').style.background =
+      `radial-gradient(ellipse 38% 38% at 50% 50%, rgba(0,0,0,0) 28%, rgba(${veilCol},.13) 68%, rgba(${veilCol},.30) 100%)`;
+  }
 }
 
 function flashEl(id,op,dur){
@@ -2617,6 +2928,14 @@ function resetRun(){
   Pl.x=0; Pl.y=0; Pl.vx=0; Pl.vy=0; Pl.px=0; Pl.py=0;
   hintIdx=0; hintT=0;
   clearEnts(false);
+  Shards.list.forEach(o=>{ o.active=false; o.mesh.visible=false; });
+  Rings.list.forEach(o=>{ o.active=false; o.mesh.visible=false; });
+  Lights.pool.forEach(o=>{ o.life=0; o.l.visible=false; o.l.intensity=0; });
+  for(let i=0;i<Parts.n;i++){ Parts.life[i]=0; Parts.siz[i]=0; Parts.pos[i*3+2]=99999; }
+  if(shockwave) shockwave.visible=false;
+  cloudHit=0; cloudFactor=0;
+  scene.fog.near=700; scene.fog.far=3900;
+  Pl.x=0; Pl.y=0; resetTrail();
   rollSector(1);
   ship.visible=true; ship.position.set(0,0,0);
   camera.position.set(0,12,CFG.camDist+40);
@@ -2672,6 +2991,10 @@ function die(){
   ship.visible=false;
   emit(Pl.x,Pl.y,0,90,0xffaa44,90,14,1.3);
   emit(Pl.x,Pl.y,0,50,0xffffff,140,9,0.8);
+  burstShards(Pl.x,Pl.y,0, 18, 0x2b3644, 60, 1.6);
+  shockRing(Pl.x,Pl.y,0, 0xffaa44, 460, 0.9, 3);
+  shockRing(Pl.x,Pl.y,0, 0xffffff, 300, 0.7, 2);
+  flashLight(Pl.x,Pl.y,0, 0xffbb55, 26, 1200, 0.9);
   Cam.shake+=4; Cam.kick+=6;
   Audio_.death(); Audio_.targetIntensity=0;
   flashEl('damage-flash',1,1.2);
@@ -2718,6 +3041,12 @@ function triggerDetonation(){
   if(!shockwave) buildShockwave();
   shockwave.visible=true; shockwave.position.set(0,0,-1400);
   shockwave.scale.setScalar(40); shockwave.material.opacity=1;
+  // layered blast: light, rings, and a storm of debris blowing past the ship
+  flashLight(0,0,-600, 0xffffff, 40, 9000, 1.2);
+  for(let i=0;i<5;i++) shockRing(0,0,-900-i*260, i%2?0xffffff:0xffd27a, 900+i*220, 1.1+i*0.15, 8);
+  for(let i=0;i<26;i++)
+    burstShards(rnd(180,-180), rnd(120,-120), -rnd(2200,600), 1, pick([0x8a7864,0x6b5a4a,0xb9a894]), 90, rnd(3,1.2));
+  emit(0,0,-800, 60, 0xffe6b0, 160, 16, 1.4);
   $('banner-title').textContent='STAR REMOVED';
   $('banner-sub').textContent='SECTOR '+String(State.sector).padStart(2,'0')+' COMPLETE';
   $('banner-list').innerHTML=bonusRows.map(r=>
@@ -2729,6 +3058,13 @@ function updateDetonation(dt, ds){
   starGroup.scale.setScalar(starProps.radius*(1+g*g*7));
   starHalo.material.opacity=0.1+g*0.6;
   starUniforms.boil.value = 1+g*7;
+  // the star whites out as it goes
+  starUniforms.baseColor.value.lerp(new THREE.Color(0xffffff), Math.min(1, dt*3.2));
+  starLight.intensity = 26*Math.max(0, 1-detT/1.8);
+  starLight.color.lerp(new THREE.Color(0xffffff), Math.min(1, dt*4));
+  ambient.intensity = 0.85 + 5*Math.max(0, 1-detT/1.4);
+  if(detT<1.3 && Math.random()<0.5)
+    burstShards(rnd(220,-220), rnd(150,-150), -rnd(2000,300), 1, 0x9a8878, 80, rnd(2.6,1));
   if(detT<0.12) flashEl('det-flash',1,1.6);
   if(shockwave.visible){
     shockwave.scale.multiplyScalar(1+3.4*dt*(1+detT));
@@ -2739,6 +3075,8 @@ function updateDetonation(dt, ds){
   if(detT>0.7 && !$('banner').classList.contains('on')) $('banner').classList.add('on');
   stepWorld(dt, ds);
   updatePlayer(dt, ds, true);
+  starLight.intensity = 26*Math.max(0, 1-detT/1.8);
+  ambient.intensity = 0.85 + 5*Math.max(0, 1-detT/1.4);
   if(detT>4.0) nextSector();
 }
 function nextSector(){
@@ -2818,6 +3156,10 @@ function frame(now){
   }
 
   updateParticles(dt, State.speed);
+  updateShards(dt, State.speed);
+  updateRings(dt, State.speed);
+  updateLights(dt, State.speed);
+  updateTrail(dt, State.speed, speedIntensity());
   updatePopups(dt, State.speed);
   if(State.mode!=='paused') updateCamera(dt);
   renderer.render(scene, camera);
