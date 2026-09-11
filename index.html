@@ -106,9 +106,8 @@ canvas#gl{display:block;position:fixed;inset:0;width:100%;height:100%;}
                     rgba(0,0,0,0) 62%, rgba(120,220,255,.045) 88%, rgba(120,220,255,0) 100%),
     radial-gradient(ellipse 90% 70% at 50% 44%, rgba(40,255,220,.030) 0%, rgba(0,0,0,0) 70%);}
 #glass.on{display:block}
-#hud.fpv #cockpit{filter:drop-shadow(0 0 7px rgba(34,255,221,.35))}
-#hud.fpv .arc,#hud.fpv .arc-thin{opacity:.92}
-#hud.fpv .corner{text-shadow:0 0 10px rgba(34,255,221,.45)}
+/* in the cockpit the readouts live on the glass itself, so the flat ring goes */
+#hud.fpv #cockpit,#hud.fpv .corner,#hud.fpv #reticle{display:none}
 /* the corridor's invisible wall, drawn: hazard stripes that rise as you close
    on the edge and go red the moment you are pinned against it */
 #bounds{position:fixed;inset:0;pointer-events:none;z-index:0}
@@ -924,7 +923,7 @@ if(isTouch){
 /* ================================================================ RENDERER */
 let renderer, scene, camera, starLight, ambient, rimLight, skyLight, keyLight;
 let rimColor = new THREE.Color(0x9fd8ff);   // silhouette halo, tinted by the sector star
-let ship, hullGroup=null, cockpitGroup=null, cockpitStrips=[], shipGlow=[], shieldMesh, engineCones=[], noseLight=null;
+let ship, hullGroup=null, cockpitGroup=null, cockpitDash=null, cockpitStrips=[], shipGlow=[], shieldMesh, engineCones=[], noseLight=null;
 let starGroup, starCore, starCorona, starHalo, starUniforms, starProms=[], starFlare=null, starRays=[];
 let nebula, dust, conduitRings=[], streaks, streakGeo;
 const Cam = { shake:0, roll:0, kick:0, fovBase:72 };
@@ -945,6 +944,7 @@ function initThree(){
 
   camera = new THREE.PerspectiveCamera(72, innerWidth/innerHeight, 1, 90000);
   camera.position.set(0, 12, CFG.camDist);
+  scene.add(camera);   // required for camera-parented geometry (the cockpit) to render
 
   ambient = new THREE.AmbientLight(0x4a5878, 1.0); scene.add(ambient);
   skyLight = new THREE.HemisphereLight(0x8fb4ff, 0x4a3a2a, 0.85); scene.add(skyLight);
@@ -1306,62 +1306,134 @@ function buildShip(){
 /* Cockpit interior. Sized to frame the view from the pilot's eye (which sits
    at ship-local 0,1.15,-2.2), not to the hull's real proportions - you never
    see the outside of it. DoubleSide so interior faces render from within. */
-function cockpitPart(geo, color, wire, emissive){
+function cockpitPart(geo, color, wire, thresh, emissive){
   const m=new THREE.Mesh(geo, new THREE.MeshPhongMaterial({
-    color, emissive:emissive===undefined?0x081418:emissive,
-    flatShading:true, shininess:24, side:THREE.DoubleSide }));
-  m.add(new THREE.LineSegments(edgesFor(geo),
-    new THREE.LineBasicMaterial({color:wire||0x22ffdd, transparent:true, opacity:0.7})));
+    color, emissive:emissive===undefined?0x0a161c:emissive,
+    flatShading:false, shininess:40, side:THREE.DoubleSide }));
+  m.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo, thresh===undefined?28:thresh),
+    new THREE.LineBasicMaterial({color:wire||0x2fd8c4, transparent:true, opacity:0.6})));
   return m;
 }
+
+/* The canopy is rigid to your HEAD, not to the airframe: it hangs off the
+   camera. Parented to the ship it slid and swung against the view, because the
+   camera damps toward the ship, rolls at its own rate and leads with velocity.
+   Camera-local space: origin is the eye, -z is forward. */
 function buildCockpit(){
   cockpitGroup = new THREE.Group();
-  // Everything is laid out relative to the pilot's EYE, not the ship origin,
-  // and sized from the actual FOV so the frame lands on the edges of the view
-  // instead of somewhere off screen.
-  cockpitGroup.position.set(0, FPV_EYE_Y, FPV_EYE_Z);   // origin AT the eye
+  const wire=0x2fd8c4, panel=0x141c24, deep=0x0d141b;
+  // half-extents of the view at a given depth: every part is placed against
+  // the depth it actually sits at, never against some other part's depth
+  const T=Math.tan(CFG.fpvFov*0.5*Math.PI/180);
+  const hy=d=>T*d, hx=d=>T*d*1.78;
+  const HZ=2.4;
 
-  const t = Math.tan(CFG.fpvFov*0.5*Math.PI/180);
-  const FZ = 3.4, DZ = 2.0;                 // frame / dashboard depth ahead of the eye
-  const fH = t*FZ,  fW = fH*1.78;           // half-extents visible at that depth (16:9)
-  const dH = t*DZ,  dW = dH*1.78;
-  const H = fH*0.80, W = fW*0.86;           // window opening, just inside the view
-  const frame=0x161d26, wire=0x2fd8c4;
+  // --- canopy ring, an ellipse just inside the edges of the view ---
+  const ring=cockpitPart(new THREE.TorusGeometry(1, 0.034, 10, 96), panel, wire, 40);
+  ring.scale.set(hx(2.56)*0.93, hy(2.56)*0.94, 1.6);
+  ring.position.z=-2.56;
+  cockpitGroup.add(ring);
+  const ring2=cockpitPart(new THREE.TorusGeometry(1, 0.018, 8, 80), deep, wire, 40);
+  ring2.scale.set(hx(2.70)*0.985, hy(2.70)*0.99, 1.2);
+  ring2.position.z=-2.70;
+  cockpitGroup.add(ring2);
 
-  const top=cockpitPart(new THREE.BoxGeometry(W*2+0.9, 0.42, 0.55), frame, wire);
-  top.position.set(0, H+0.21, -FZ); cockpitGroup.add(top);
-  const bot=cockpitPart(new THREE.BoxGeometry(W*2+0.9, 0.5, 0.55), frame, wire);
-  bot.position.set(0, -H-0.25, -FZ); cockpitGroup.add(bot);
+  // --- ribs arcing back over the canopy ---
   [-1,1].forEach(sx=>{
-    const p=cockpitPart(new THREE.BoxGeometry(0.44, H*2+0.5, 0.55), frame, wire);
-    p.position.set(sx*(W+0.22), 0, -FZ); cockpitGroup.add(p);
-    [-1,1].forEach(sy=>{                    // A-pillars across the corners
-      const d=cockpitPart(new THREE.BoxGeometry(2.3, 0.32, 0.5), frame, wire);
-      d.position.set(sx*(W-0.70), sy*(H-0.38), -FZ+0.06);
-      d.rotation.z = -sx*sy*0.66;
-      cockpitGroup.add(d);
-    });
+    const rib=cockpitPart(new THREE.TorusGeometry(1, 0.020, 8, 44, Math.PI*0.60), panel, wire, 40);
+    rib.scale.set(1.3, hy(2.3)*0.95, 1);
+    rib.position.set(sx*hx(2.3)*0.55, 0, -2.30);
+    rib.rotation.y=-sx*1.0;
+    rib.rotation.z=Math.PI*0.20;
+    cockpitGroup.add(rib);
   });
 
-  // dashboard: top edge sits just inside the bottom of the view
-  const dash=cockpitPart(new THREE.BoxGeometry(dW*2.1, 1.3, 1.8), 0x11171f, wire);
-  dash.position.set(0, -dH*0.72-0.62, -DZ); dash.rotation.x=-0.40;
-  cockpitGroup.add(dash);
-  for(let i=0;i<3;i++){
-    const strip=new THREE.Mesh(new THREE.BoxGeometry(dW*0.46, 0.07, 0.09),
-      new THREE.MeshBasicMaterial({color:i===1?0xff2fa8:0x22ffdd, transparent:true, opacity:0.85, fog:false}));
-    strip.position.set((i-1)*dW*0.58, -dH*0.72-0.10, -DZ+0.55); strip.rotation.x=-0.40;
-    cockpitGroup.add(strip); cockpitStrips.push(strip);
+  /* --- dashboard: a shelf sloping down toward the pilot. Its FAR edge sits at
+     63% of the way down the view so the panel and everything on it is on
+     screen; the near edge runs under your chin. All instruments are children
+     of the shelf, so they inherit its placement and cannot drift off view. --- */
+  const DFZ=1.9, DNZ=0.85;
+  const shelfW=hx(DFZ)*2.3, shelfD=1.12;
+  const shelfGeo=new THREE.PlaneGeometry(shelfW, shelfD, 20, 2);
+  const sp=shelfGeo.attributes.position;
+  for(let i=0;i<sp.count;i++){                     // bow it across, like a cowl
+    const u=sp.getX(i)/(shelfW/2);
+    sp.setZ(i, -0.16*u*u);
   }
-  // side consoles inside the pillars
+  shelfGeo.computeVertexNormals();
+  const dash=new THREE.Mesh(shelfGeo, new THREE.MeshPhongMaterial({
+    color:deep, emissive:0x0a141a, shininess:50, side:THREE.DoubleSide }));
+  dash.position.set(0, (-hy(DFZ)*0.63 + -1.55)/2, -(DFZ+DNZ)/2);
+  dash.rotation.x = -Math.PI/2 + 0.36;
+  cockpitGroup.add(dash);
+  cockpitDash = dash;
+
+  const onDash=(o,x,y)=>{ o.position.set(x,y,0.035); dash.add(o); return o; };
+  // glare-shield lip along the far edge
+  const lip=cockpitPart(new THREE.CylinderGeometry(0.045,0.045,shelfW*0.98,10), panel, wire, 40);
+  lip.rotation.z=Math.PI/2; onDash(lip, 0, shelfD*0.44);
+  // instrument bezels with lit dials
+  for(let i=-1;i<=1;i++){
+    const bez=cockpitPart(new THREE.TorusGeometry(0.17,0.020,8,26), panel, wire, 40);
+    onDash(bez, i*0.62, 0.13);
+    const dial=new THREE.Mesh(new THREE.CircleGeometry(0.15,20),
+      new THREE.MeshBasicMaterial({color:i===0?0xff2fa8:0x22ffdd, transparent:true,
+        opacity:0.3, side:THREE.DoubleSide, blending:THREE.AdditiveBlending, depthWrite:false, fog:false}));
+    onDash(dial, i*0.62, 0.13); dial.position.z=0.030;
+    cockpitStrips.push(dial);
+  }
+  // vent slats flanking the bezels
   [-1,1].forEach(sx=>{
-    const c=cockpitPart(new THREE.BoxGeometry(0.85, 1.4, 1.5), 0x11171f, wire);
-    c.position.set(sx*dW*0.82, -dH*0.55, -DZ-0.2); c.rotation.z=sx*0.20;
-    cockpitGroup.add(c);
+    for(let i=0;i<5;i++){
+      const sl=new THREE.Mesh(new THREE.BoxGeometry(0.62,0.028,0.02),
+        new THREE.MeshPhongMaterial({color:panel, emissive:0x08131a, shininess:30}));
+      onDash(sl, sx*1.55, -0.10+i*0.075);
+    }
+  });
+  // status strips outboard of the vents
+  [-1,1].forEach(sx=>{
+    const st=new THREE.Mesh(new THREE.BoxGeometry(0.55,0.045,0.02),
+      new THREE.MeshBasicMaterial({color:0x22ffdd, transparent:true, opacity:0.6, fog:false}));
+    onDash(st, sx*2.45, 0.10);
+    cockpitStrips.push(st);
   });
 
+  // --- side rails, kept inside the horizontal view at their own depth ---
+  [-1,1].forEach(sx=>{
+    const rail=cockpitPart(new THREE.CylinderGeometry(0.05,0.09,1.9,10), panel, wire, 40);
+    rail.position.set(sx*hx(1.5)*0.88, -hy(1.5)*0.55, -1.5);
+    rail.rotation.z=sx*0.34; rail.rotation.x=Math.PI/2.4;
+    cockpitGroup.add(rail);
+  });
+
+  buildGlassHud(HZ, hx(HZ), hy(HZ));
   cockpitGroup.visible=false;
-  ship.add(cockpitGroup);
+  camera.add(cockpitGroup);              // rigid to the view
+}
+
+/* ---- the HUD, drawn to a canvas and projected onto the canopy glass ---- */
+let glassCanvas=null, glassCtx=null, glassTex=null, glassHud=null, glassT=0;
+function buildGlassHud(HZ, hx, hy){
+  glassCanvas=document.createElement('canvas');
+  glassCanvas.width=1024; glassCanvas.height=576;
+  glassCtx=glassCanvas.getContext('2d');
+  glassTex=new THREE.CanvasTexture(glassCanvas);
+  glassTex.minFilter=THREE.LinearFilter; glassTex.magFilter=THREE.LinearFilter;
+  glassTex.generateMipmaps=false;
+
+  const W=hx*1.86, H=hy*1.82;
+  const g=new THREE.PlaneGeometry(W, H, 16, 10);
+  const p=g.attributes.position;
+  for(let i=0;i<p.count;i++){            // bow it like a windscreen
+    const x=p.getX(i)/(W/2), y=p.getY(i)/(H/2);
+    p.setZ(i, -0.30*x*x - 0.09*y*y);
+  }
+  g.computeVertexNormals();
+  glassHud=new THREE.Mesh(g, new THREE.MeshBasicMaterial({
+    map:glassTex, transparent:true, blending:THREE.AdditiveBlending,
+    depthWrite:false, fog:false, side:THREE.DoubleSide }));
+  glassHud.position.z=-HZ;
+  cockpitGroup.add(glassHud);
 }
 
 /* radial glow sprite used by engines, pickups, explosions */
@@ -3144,9 +3216,18 @@ function updateCamera(dt){
   if(hullGroup) hullGroup.visible = !fpv;
   if(cockpitGroup){
     cockpitGroup.visible = fpv;
-    if(fpv) cockpitStrips.forEach((st,i)=>{
-      st.material.opacity = 0.45 + 0.45*Math.abs(Math.sin(State.time*(1.6+i*0.5)+i));
-    });
+    if(fpv){
+      cockpitStrips.forEach((st,i)=>{
+        st.material.opacity = 0.18 + 0.26*Math.abs(Math.sin(State.time*(1.6+i*0.5)+i));
+      });
+      // a deliberate, small head lag under lateral g - enough to feel alive,
+      // far short of the drift that made it read as detached
+      const sw=cockpitGroup.position;
+      sw.x = damp(sw.x, clamp(-Pl.vx*0.0016,-0.11,0.11), 9, dt);
+      sw.y = damp(sw.y, clamp(-Pl.vy*0.0013,-0.08,0.08), 9, dt);
+      cockpitGroup.rotation.z = damp(cockpitGroup.rotation.z, clamp(Pl.vx*0.00034,-0.028,0.028), 9, dt);
+      drawGlass(dt);
+    }
   }
   if(fpv){
     // sit in the cockpit: the ship IS the camera, so the corridor rings and
@@ -3307,19 +3388,6 @@ function updateHUD(dt){
   wall('bw-l', Pl.x<0, ex); wall('bw-r', Pl.x>0, ex);
   wall('bw-b', Pl.y<0, ey); wall('bw-t', Pl.y>0, ey);
 
-  /* --- in the cockpit the ring is a projection on the glass: tilt it, and
-         let it bank a little against the airframe --- */
-  if(State.fpv){
-    const roll = clamp(-Pl.vx*0.011, -6, 6);
-    const shiftY = clamp(-Pl.vy*0.006, -1.6, 1.6);
-    $('cockpit').style.transform =
-      `translate(-50%,-50%) perspective(1100px) rotateX(8deg) rotateZ(${roll.toFixed(2)}deg) `+
-      `translateY(${(2.5+shiftY).toFixed(2)}%) scale(0.80)`;
-  } else if(HC.fpvT!=='0'){
-    HC.fpvT='0'; $('cockpit').style.transform='translate(-50%,-50%)';
-  }
-  if(State.fpv) HC.fpvT='1';
-
   $('speed-veil').style.opacity = String(clamp(Math.max(si*0.95, corona?0.55:0),0,1));
   const veilCol = breakerT>0 ? '255,47,168' : corona ? '255,140,60'
                 : redline ? '255,180,60' : '120,200,255';
@@ -3328,6 +3396,111 @@ function updateHUD(dt){
     $('speed-veil').style.background =
       `radial-gradient(ellipse 38% 38% at 50% 50%, rgba(0,0,0,0) 28%, rgba(${veilCol},.13) 68%, rgba(${veilCol},.30) 100%)`;
   }
+}
+
+/* The cockpit HUD. Same readings as the ring, laid out the way a real head-up
+   display is: bars and blocks around the edges of the glass, aim mark dead
+   centre. Redrawn at ~30Hz to halve the texture upload. */
+function drawGlass(dt){
+  if(!glassCtx) return;
+  glassT-=dt; if(glassT>0) return; glassT=0.033;
+  const S=State, c=glassCtx, W=glassCanvas.width, H=glassCanvas.height;
+  c.clearRect(0,0,W,H);
+  c.lineCap='butt';
+  const CY='#37ffe0', AM='#ffc233', MG='#ff5bbd', RD='#ff5555', BL='#6ec6ff', WH='#eafffb';
+
+  const bar=(x,y,w,h,v,col,bg)=>{
+    c.globalAlpha=0.22; c.fillStyle=bg||col; c.fillRect(x,y,w,h);
+    c.globalAlpha=1; c.fillStyle=col; c.fillRect(x,y,w*clamp(v,0,1),h);
+  };
+  const txt=(t,x,y,size,col,align,weight)=>{
+    c.font=`${weight||700} ${size}px Orbitron, ui-monospace, monospace`;
+    c.textAlign=align||'left'; c.textBaseline='alphabetic';
+    c.fillStyle=col; c.fillText(t,x,y);
+  };
+  const tick=(x,y,w,h,on,col)=>{ c.globalAlpha=on?1:0.22; c.fillStyle=col; c.fillRect(x,y,w,h); c.globalAlpha=1; };
+
+  // ---- top left: velocity + gearbox ----
+  txt('VELOCITY',54,64,19,CY);
+  txt(String(Math.round(S.speed*SPEED_DISPLAY)),50,126,54,WH,'left',900);
+  txt('KM/S',52,154,17,CY);
+  const redline=S.gear>=CFG.maxGear;
+  for(let i=0;i<CFG.maxGear;i++) tick(50+i*30,176,22,11,i<S.gear,redline?RD:CY);
+  txt(S.gear===0?'COAST':(redline?'REDLINE':'GEAR '+S.gear),50,212,19,redline?RD:CY);
+  txt('HEAT',50,246,15,S.heat>72?RD:AM);
+  bar(50,256,168,9,S.heat/100,S.heat>72?RD:AM);
+
+  // ---- top right: score ----
+  txt('SCORE',W-54,64,19,CY,'right');
+  txt(fmt(S.score),W-50,126,46,WH,'right',900);
+  txt('x'+S.mult.toFixed(1),W-50,178,36,AM,'right',900);
+  if(S.combo>=1) txt(Math.floor(S.combo)+' CHAIN',W-50,210,19,MG,'right');
+
+  // ---- top centre: sector run ----
+  txt('SECTOR '+String(S.sector).padStart(2,'0')+' · '+S.mod.id,W/2,56,20,AM,'center');
+  bar(W/2-190,70,380,9,S.dist/S.target,CY);
+
+  // ---- bottom centre: hull + shields ----
+  txt('HULL',W/2,H-104,17,S.hull<30?RD:RD,'center');
+  bar(W/2-190,H-96,380,14,S.hull/100,S.hull<30?'#ff8a8a':RD);
+  for(let i=0;i<CFG.maxShields;i++){
+    const x=W/2-(CFG.maxShields-1)*13+i*26;
+    c.globalAlpha=i<S.shields?1:0.18; c.strokeStyle=BL; c.lineWidth=3;
+    c.beginPath(); c.moveTo(x,H-62); c.lineTo(x+9,H-53); c.lineTo(x,H-44); c.lineTo(x-9,H-53);
+    c.closePath(); c.stroke(); c.globalAlpha=1;
+  }
+
+  // ---- bottom left: breaker ----
+  txt('BREAKER',54,H-104,17,MG);
+  bar(50,H-96,220,14,breakerT>0?breakerT/CFG.breakerTime:S.flux/100, breakerT>0?WH:MG);
+  if(S.flux>=100&&breakerT<=0 && Math.floor(State.time*2)%2===0) txt('READY [X]',50,H-62,19,MG);
+
+  // ---- bottom right: cannon power ----
+  txt('PWR',W-54,H-104,17,S.energy<CFG.tapCost?RD:BL,'right');
+  bar(W-270,H-96,220,14,S.energy/CFG.energyMax, S.energy<CFG.tapCost?RD:(S.rechargeT>0?'#2f6f9f':BL));
+
+  // ---- centre: aim mark, charge ring, boresight ladder ----
+  const cx=W/2, cy=H/2;
+  c.strokeStyle=breakerT>0?MG:(S.charge>=0.72?AM:CY); c.lineWidth=3;
+  c.beginPath();
+  c.moveTo(cx-46,cy); c.lineTo(cx-18,cy); c.moveTo(cx+18,cy); c.lineTo(cx+46,cy);
+  c.moveTo(cx,cy-46); c.lineTo(cx,cy-18); c.moveTo(cx,cy+18); c.lineTo(cx,cy+46);
+  c.stroke();
+  c.fillStyle=MG; c.beginPath(); c.arc(cx,cy,4,0,6.283); c.fill();
+  c.strokeStyle='rgba(55,255,224,.22)'; c.lineWidth=2;
+  c.beginPath(); c.arc(cx,cy,70,0,6.283); c.stroke();
+  if(S.charging&&S.charge>0.02){
+    // charge winds round the aim mark, and the mark itself opens up with it
+    c.strokeStyle=S.charge>=0.72?AM:(S.charge>=0.22?BL:'#8fd8ff'); c.lineWidth=8;
+    c.beginPath(); c.arc(cx,cy,70,-Math.PI/2,-Math.PI/2+S.charge*6.283); c.stroke();
+    if(S.charge>=0.72){
+      c.strokeStyle=AM; c.lineWidth=2; c.globalAlpha=0.5+0.5*Math.abs(Math.sin(State.time*9));
+      c.beginPath(); c.arc(cx,cy,84,0,6.283); c.stroke(); c.globalAlpha=1;
+    }
+  }
+  // flight-path marker: where the airframe is actually tracking, vs where the
+  // nose points. The gap between the two is your drift.
+  const dx=clamp(Pl.vx*0.52,-210,210), dy=clamp(-Pl.vy*0.46,-130,130);
+  c.strokeStyle=MG; c.lineWidth=3; c.globalAlpha=0.85;
+  c.beginPath(); c.arc(cx+dx,cy+dy,13,0,6.283); c.stroke();
+  c.beginPath();
+  c.moveTo(cx+dx-30,cy+dy); c.lineTo(cx+dx-13,cy+dy);
+  c.moveTo(cx+dx+13,cy+dy); c.lineTo(cx+dx+30,cy+dy);
+  c.moveTo(cx+dx,cy+dy-13); c.lineTo(cx+dx,cy+dy-26);
+  c.stroke(); c.globalAlpha=1;
+
+  // ---- transient banners, so they survive the DOM ring being hidden ----
+  if(warnT>0){
+    const el=$('warn');
+    txt(el.textContent, cx, cy-132, 40, el.style.fill||WH, 'center', 900);
+  }
+  if(hintT>0) txt($('hint').textContent, cx, cy+160, 22, 'rgba(230,255,250,.92)', 'center');
+
+  c.globalAlpha=0.05; c.fillStyle=CY;
+  for(let y=(State.time*40)%6; y<H; y+=6) c.fillRect(0,y,W,1);
+  c.globalAlpha=1;
+
+  glassTex.needsUpdate=true;
 }
 
 function flashEl(id,op,dur){
